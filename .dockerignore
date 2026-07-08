@@ -8,7 +8,8 @@ venv/
 env/
 .git/
 .gitignore
-*.onnx
+# Model files — excluded from Docker build context
+# vcmodel1.onnx is mounted via docker-compose.yml volume instead
 *.pt
 *.pth
 *.weights
