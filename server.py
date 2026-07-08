@@ -393,15 +393,21 @@ _TICK = 0.005
 
 def _mjpeg(cam_id):
     last_seq = -1
+    placeholder = None
     try:
         while True:
             t0 = time.monotonic()
             jpeg, last_seq = buffers[cam_id].get_jpeg_if_new(last_seq)
-            if jpeg is not None:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-                )
+            if jpeg is None:
+                if placeholder is None:
+                    blank = np.zeros((200, 320, 3), dtype=np.uint8)
+                    _, buf = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 30])
+                    placeholder = buf.tobytes()
+                jpeg = placeholder
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+            )
             elapsed = time.monotonic() - t0
             remaining = MJPEG_INTERVAL - elapsed
             while remaining > 0:

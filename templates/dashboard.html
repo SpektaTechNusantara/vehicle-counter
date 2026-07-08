@@ -116,6 +116,7 @@
     font-size: 0.85rem;
     pointer-events: none;
   }
+  .cam-feed-wrap.has-feed::before { content: none; }
 
   .cam-info {
     padding: 12px 16px;
@@ -542,8 +543,8 @@
       const streamUrl = `/stream/${i}`;
       const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File', browser: 'Browser' }[cam.source] || 'File';
       html += `<div class="cam-card">
-        <div class="cam-feed-wrap">
-          <img class="cam-feed" src="${streamUrl}" alt="${cam.label}">
+        <div class="cam-feed-wrap" id="wrap-${i}">
+          <img class="cam-feed" id="feed-${i}" src="${streamUrl}" alt="${cam.label}" onload="feedLoaded(${i})">
         </div>
         <div class="cam-info">
           <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
@@ -564,6 +565,11 @@
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+  }
+
+  function feedLoaded(id) {
+    const wrap = document.getElementById(`wrap-${id}`);
+    if (wrap) wrap.classList.add('has-feed');
   }
 
   // ── SSE live counts ──
