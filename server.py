@@ -752,8 +752,20 @@ def main():
 
     port = args.port or port
 
+    # Startup checks
+    model_path = _global_cfg["model"]
+    if not os.path.exists(model_path):
+        log.error(f"Model file not found: {model_path}")
+        log.error(f"Place vcmodel1.onnx at: {model_path} (mount via docker-compose.yml or COPY in Dockerfile)")
+    if not os.path.exists("videos"):
+        log.warning("Directory 'videos/' not found — create it and place .mp4 files inside, or use RTSP URLs")
+    else:
+        mp4s = [f for f in os.listdir("videos") if f.endswith(".mp4")]
+        if not mp4s:
+            log.warning("videos/ exists but no .mp4 files found — place video files or use RTSP URLs")
+
     log.info(f"Dashboard → http://localhost:{port}/")
-    log.info(f"Model     : {_global_cfg['model']}")
+    log.info(f"Model     : {model_path}")
     log.info(f"Tracker   : {_global_cfg['tracker']}")
     cam_count = len([b for b in buffers if b is not None])
     log.info(f"Cameras   : {cam_count} (add/remove from browser UI)")

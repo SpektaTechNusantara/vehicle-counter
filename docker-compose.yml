@@ -7,13 +7,13 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Mount model ONNX
+      # Letakkan vcmodel1.onnx di direktori yang sama dengan docker-compose.yml
       - ./vcmodel1.onnx:/app/vcmodel1.onnx
-      # Mount folder video (letakkan video disini)
+      # Buat folder videos/ dan taruh file .mp4 di dalamnya
       - ./videos:/app/videos
       # Mount config (jika ingin modifikasi tanpa rebuild)
-      - ./cameras.yaml:/app/cameras.yaml
-      - ./bytetrack.yaml:/app/bytetrack.yaml
+      - ./cameras.yaml:/app/cameras.yaml:ro
+      - ./bytetrack.yaml:/app/bytetrack.yaml:ro
       # Mount source + templates agar cukup restart (tanpa build) saat update
       - ./server.py:/app/server.py
       - ./templates:/app/templates
