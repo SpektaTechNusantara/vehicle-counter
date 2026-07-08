@@ -539,6 +539,11 @@
   }
 
   function renderCameras() {
+    // Stop all active feeds BEFORE destroying DOM elements
+    for (const id of Object.keys(canvasFeedControllers)) stopCanvasFeed(id);
+    for (const id of Object.keys(annotationOverlays)) stopAnnotationOverlay(id);
+    for (const id of Object.keys(browserStreams)) stopBrowserCam(id);
+
     const cams = loadConfig();
     const grid = document.getElementById('cam-grid');
     const emptyState = document.getElementById('empty-state');
