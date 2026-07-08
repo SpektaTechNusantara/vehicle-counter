@@ -14,6 +14,9 @@ services:
       # Mount config (jika ingin modifikasi tanpa rebuild)
       - ./cameras.yaml:/app/cameras.yaml
       - ./bytetrack.yaml:/app/bytetrack.yaml
+      # Mount source + templates agar cukup restart (tanpa build) saat update
+      - ./server.py:/app/server.py
+      - ./templates:/app/templates
     environment:
       - CONFIG=cameras.yaml
       - PORT=5000
