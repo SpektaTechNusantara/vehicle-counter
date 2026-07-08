@@ -105,6 +105,21 @@
     object-fit: contain;
     display: block;
   }
+  .cam-video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .cam-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    object-fit: contain;
+  }
   .cam-feed-wrap::before {
     content: "Connecting\u2026";
     position: absolute;
@@ -386,6 +401,7 @@
   })();
 
   // ── Color palette ──
+  const CLASS_NAMES = {0: 'haul_truck', 1: 'other_vehicles'};
   const CLASS_COLORS = {
     haul_truck:     { dot: '#00e5ff', text: '#00e5ff' },
     other_vehicles: { dot: '#ff9800', text: '#ff9800' },
@@ -541,43 +557,48 @@
     let html = '';
     for (let i = 0; i < cams.length; i++) {
       const cam = cams[i];
-      const streamUrl = `/stream/${i}`;
       const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File', browser: 'Browser' }[cam.source] || 'File';
       if (cam.source === 'browser') {
         html += `<div class="cam-card">
-          <div class="cam-feed-wrap" id="wrap-${i}">
-            <img class="cam-feed" id="feed-${i}" src="" alt="${cam.label}" onload="feedLoaded(${i})">
+        <div class="cam-feed-wrap" id="wrap-${i}">
+          <video class="cam-video" id="video-${i}" autoplay playsinline muted></video>
+          <canvas class="cam-overlay" id="overlay-${i}"></canvas>
+        </div>
+        <div class="cam-info">
+          <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(Browser)</span></span>
+          <div class="cam-counts" id="counts-${i}"></div>
+          <div class="cam-actions">
+            <button class="cam-btn btn-start" id="toggle-${i}"
+                    onclick="toggleCam(${i}, this)">Start</button>
+            <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+            <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
           </div>
-          <div class="cam-info">
-            <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(Browser)</span></span>
-            <div class="cam-counts" id="counts-${i}"></div>
-            <div class="cam-actions">
-              <button class="cam-btn btn-start" id="toggle-${i}"
-                      onclick="toggleCam(${i}, this)">Start</button>
-              <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
-              <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
-            </div>
-          </div>
-        </div>`;
+        </div>
+      </div>`;
       } else {
         html += `<div class="cam-card">
-          <div class="cam-feed-wrap" id="wrap-${i}">
-            <img class="cam-feed" id="feed-${i}" src="${streamUrl}" alt="${cam.label}" onload="feedLoaded(${i})">
+        <div class="cam-feed-wrap" id="wrap-${i}">
+          <canvas class="cam-feed" id="feed-${i}"></canvas>
+        </div>
+        <div class="cam-info">
+          <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
+          <div class="cam-counts" id="counts-${i}"></div>
+          <div class="cam-actions">
+            <button class="cam-btn btn-start" id="toggle-${i}"
+                    onclick="toggleCam(${i}, this)">Start</button>
+            <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+            <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
           </div>
-          <div class="cam-info">
-            <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
-            <div class="cam-counts" id="counts-${i}"></div>
-            <div class="cam-actions">
-              <button class="cam-btn btn-start" id="toggle-${i}"
-                      onclick="toggleCam(${i}, this)">Start</button>
-              <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
-              <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
-            </div>
-          </div>
-        </div>`;
+        </div>
+      </div>`;
+      }
+    grid.innerHTML = html;
+    // Auto-start canvas feeds for non-browser cameras
+    for (let i = 0; i < cams.length; i++) {
+      if (cams[i].source !== 'browser') {
+        startCanvasFeed(i);
       }
     }
-    grid.innerHTML = html;
   }
 
   function escHtml(s) {
@@ -591,7 +612,137 @@
     if (wrap) wrap.classList.add('has-feed');
   }
 
+  // ── Canvas feed (double-buffered, no flicker) ──
 
+  const canvasFeedControllers = {};
+
+  function startCanvasFeed(id) {
+    const canvas = document.getElementById(`feed-${id}`);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let stopped = false;
+    let pollTimer = null;
+
+    async function poll() {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/frame/${id}`);
+        if (res.status !== 200) {
+          pollTimer = setTimeout(poll, 300);
+          return;
+        }
+        const blob = await res.blob();
+        const img = new Image();
+        img.onload = () => {
+          if (stopped) { URL.revokeObjectURL(img.src); return; }
+          if (canvas.width !== img.width || canvas.height !== img.height) {
+            canvas.width = img.width;
+            canvas.height = img.height;
+          }
+          ctx.drawImage(img, 0, 0);
+          URL.revokeObjectURL(img.src);
+          feedLoaded(id);
+          pollTimer = setTimeout(poll, 8); // ~120 FPS display
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(img.src);
+          pollTimer = setTimeout(poll, 300);
+        };
+        img.src = URL.createObjectURL(blob);
+      } catch (e) {
+        pollTimer = setTimeout(poll, 500);
+      }
+    }
+
+    poll();
+    canvasFeedControllers[id] = () => {
+      stopped = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }
+
+  function stopCanvasFeed(id) {
+    if (canvasFeedControllers[id]) {
+      canvasFeedControllers[id]();
+      delete canvasFeedControllers[id];
+    }
+    const wrap = document.getElementById(`wrap-${id}`);
+    if (wrap) wrap.classList.remove('has-feed');
+  }
+
+  // ── Annotation overlay (for browser cameras: video + transparent overlay) ──
+
+  const annotationOverlays = {};
+
+  function startAnnotationOverlay(id) {
+    const overlay = document.getElementById(`overlay-${id}`);
+    const video = document.getElementById(`video-${id}`);
+    if (!overlay || !video) return;
+    let stopped = false;
+    let timer = null;
+
+    async function poll() {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/annotations/${id}`);
+        const data = await res.json();
+
+        const vw = video.videoWidth, vh = video.videoHeight;
+        if (vw && vh && (overlay.width !== vw || overlay.height !== vh)) {
+          overlay.width = vw;
+          overlay.height = vh;
+        }
+
+        const ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        const lx = data.line_x * overlay.width;
+        ctx.beginPath();
+        ctx.moveTo(lx, 0);
+        ctx.lineTo(lx, overlay.height);
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        for (const box of data.boxes) {
+          const name = CLASS_NAMES[box.class] || 'unknown';
+          const color = CLASS_COLORS[name]?.dot || '#ffff00';
+          const label = name.replace(/_/g, ' ') + ' ' + box.id;
+
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+
+          ctx.font = 'bold 13px sans-serif';
+          const tw = ctx.measureText(label).width;
+          const lh = 18;
+          ctx.fillStyle = color;
+          ctx.fillRect(box.x1, box.y1 - lh, tw + 6, lh);
+          ctx.fillStyle = '#000';
+          ctx.fillText(label, box.x1 + 3, box.y1 - 4);
+        }
+
+        timer = setTimeout(poll, 200); // 5 FPS overlay refresh
+      } catch (e) {
+        timer = setTimeout(poll, 500);
+      }
+    }
+
+    poll();
+    annotationOverlays[id] = () => { stopped = true; if (timer) clearTimeout(timer); };
+  }
+
+  function stopAnnotationOverlay(id) {
+    if (annotationOverlays[id]) {
+      annotationOverlays[id]();
+      delete annotationOverlays[id];
+    }
+    const overlay = document.getElementById(`overlay-${id}`);
+    if (overlay) {
+      const ctx = overlay.getContext('2d');
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+    }
+  }
 
   // ── SSE live counts ──
   let sseInitialized = false;
@@ -683,11 +834,29 @@
   }
 
   function toggleCam(id, btn) {
+    const cams = loadConfig();
+    const cam = cams[id];
     const stopping = btn.textContent.trim() === 'Stop';
-    const url = stopping ? `/stop/${id}` : `/start/${id}`;
-    fetch(url, { method: 'POST' })
-      .then(r => r.json())
-      .then(data => applyRunningState(btn, data.running));
+
+    if (stopping) {
+      if (cam && cam.source === 'browser') {
+        stopBrowserCam(id);
+      } else {
+        stopCanvasFeed(id);
+      }
+      fetch(`/stop/${id}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(d => applyRunningState(btn, d.running));
+    } else {
+      if (cam && cam.source === 'browser') {
+        startBrowserCam(id);
+      } else {
+        startCanvasFeed(id);
+      }
+      fetch(`/start/${id}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(d => applyRunningState(btn, d.running));
+    }
   }
 
   function resetCam(id, btn) {
@@ -751,26 +920,31 @@
         videoConstraint = { deviceId: { exact: cam.url } };
       }
       const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.playsinline = true;
-      video.muted = true;
-      await video.play();
 
+      const video = document.getElementById(`video-${id}`);
+      if (!video) throw new Error('Video element not found');
+      video.srcObject = stream;
+      await video.play();
+      video.addEventListener('playing', () => feedLoaded(id), { once: true });
+
+      // Capture loop: send frames to server for YOLO (30 FPS)
       const interval = setInterval(() => {
         if (video.readyState < 2) return;
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        const c = document.createElement('canvas');
+        c.width = video.videoWidth;
+        c.height = video.videoHeight;
+        c.getContext('2d').drawImage(video, 0, 0);
+        const base64 = c.toDataURL('image/jpeg', 0.6).split(',')[1];
         fetch(`/camera/${id}/frame`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ frame: base64 })
         }).catch(() => {});
-        canvas.remove();
-      }, 200); // 5 FPS
+        c.remove();
+      }, 33); // ~30 FPS capture for YOLO
+
+      // Start annotation overlay (5 FPS)
+      startAnnotationOverlay(id);
 
       browserStreams[id] = { stream, video, interval };
     } catch (e) {
@@ -782,47 +956,18 @@
     const b = browserStreams[id];
     if (!b) return;
     clearInterval(b.interval);
+    stopAnnotationOverlay(id);
     b.stream.getTracks().forEach(t => t.stop());
-    b.video.remove();
-    const img = document.getElementById(`feed-${id}`);
-    if (img) img.removeAttribute('src');
+    b.video.srcObject = null;
     const wrap = document.getElementById(`wrap-${id}`);
     if (wrap) wrap.classList.remove('has-feed');
     delete browserStreams[id];
   }
 
-  // Override toggleCam to handle browser cameras
-  const _origToggleCam = toggleCam;
-  toggleCam = function (id, btn) {
-    const cams = loadConfig();
-    const cam = cams[id];
-    const stopping = btn.textContent.trim() === 'Stop';
-
-    if (cam && cam.source === 'browser') {
-      if (stopping) {
-        stopBrowserCam(id);
-        fetch(`/stop/${id}`, { method: 'POST' })
-          .then(r => r.json())
-          .then(d => applyRunningState(btn, d.running));
-        const img = document.getElementById(`feed-${id}`);
-        if (img) img.removeAttribute('src');
-        const wrap = document.getElementById(`wrap-${id}`);
-        if (wrap) wrap.classList.remove('has-feed');
-      } else {
-        const img = document.getElementById(`feed-${id}`);
-        if (img) img.src = `/stream/${id}`;
-        startBrowserCam(id);
-        fetch(`/start/${id}`, { method: 'POST' })
-          .then(r => r.json())
-          .then(d => applyRunningState(btn, d.running));
-      }
-      return;
-    }
-    _origToggleCam(id, btn);
-  };
-
-  // Clean up browser streams on page unload
+  // Clean up on page unload
   window.addEventListener('beforeunload', function () {
+    for (const id of Object.keys(canvasFeedControllers)) stopCanvasFeed(id);
+    for (const id of Object.keys(annotationOverlays)) stopAnnotationOverlay(id);
     for (const id of Object.keys(browserStreams)) stopBrowserCam(id);
   });
 

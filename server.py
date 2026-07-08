@@ -21,7 +21,7 @@ from flask import Flask, Response, render_template, stream_with_context, request
 from waitress import serve
 from ultralytics import YOLO
 
-MJPEG_FPS = 25
+MJPEG_FPS = 60
 MJPEG_INTERVAL = 1.0 / MJPEG_FPS
 
 
@@ -297,7 +297,8 @@ class CameraWorker(threading.Thread):
                             (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 y += 28
 
-            ftimes.append(time.time() - t0)
+            elapsed = time.time() - t0
+            ftimes.append(elapsed)
             if len(ftimes) > 30:
                 ftimes.pop(0)
             fps = 1.0 / (sum(ftimes) / len(ftimes))
@@ -312,6 +313,12 @@ class CameraWorker(threading.Thread):
                 "height": h,
             }
             self.buf.put(jpeg.tobytes(), self._counts, ann_data)
+
+            # Throttle YOLO to 5 FPS to save CPU
+            remaining = 0.2 - elapsed
+            while remaining > 0 and not self._stop.is_set():
+                time.sleep(min(0.01, remaining))
+                remaining -= 0.01
 
     def stop(self):
         self._stop.set()
@@ -468,6 +475,23 @@ def stream(cam_id):
         _mjpeg(cam_id),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
+
+_FRAME_PLACEHOLDER: bytes | None = None
+
+@app.route("/frame/<int:cam_id>")
+def single_frame(cam_id):
+    """Return the latest annotated frame as a single JPEG (canvas-friendly)."""
+    if cam_id >= len(buffers) or buffers[cam_id] is None:
+        return "Not found", 404
+    global _FRAME_PLACEHOLDER
+    jpeg = buffers[cam_id].get_jpeg()
+    if jpeg is not None:
+        return Response(jpeg, mimetype="image/jpeg")
+    if _FRAME_PLACEHOLDER is None:
+        blank = np.zeros((200, 320, 3), dtype=np.uint8)
+        _, buf = cv2.imencode(".jpg", blank, [cv2.IMWRITE_JPEG_QUALITY, 30])
+        _FRAME_PLACEHOLDER = buf.tobytes()
+    return Response(_FRAME_PLACEHOLDER, mimetype="image/jpeg")
 
 
 @app.route("/counts")
