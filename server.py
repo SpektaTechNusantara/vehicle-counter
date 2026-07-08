@@ -138,7 +138,7 @@ class FrameGrabber(threading.Thread):
 # ── FrameBuffer ───────────────────────────────────────────────────────────
 
 class FrameBuffer:
-    """Thread-safe slot holding the latest annotated JPEG and counts."""
+    """Thread-safe slot holding the latest annotated JPEG, counts, and annotation data."""
 
     def __init__(self, label):
         self.label = label
@@ -147,12 +147,15 @@ class FrameBuffer:
         self._lock = threading.Lock()
         self._jpeg = None
         self._counts: dict[int, int] = {}
+        self._annotations: dict | None = None
         self._seq = 0
 
-    def put(self, jpeg_bytes, counts):
+    def put(self, jpeg_bytes, counts, annotations=None):
         with self._lock:
             self._jpeg = jpeg_bytes
             self._counts = dict(counts)
+            if annotations is not None:
+                self._annotations = annotations
             self._seq += 1
 
     def get_jpeg(self):
@@ -164,6 +167,10 @@ class FrameBuffer:
             if self._seq == last_seq or self._jpeg is None:
                 return None, last_seq
             return self._jpeg, self._seq
+
+    def get_annotations(self):
+        with self._lock:
+            return self._annotations
 
     def reset_counts(self, counts):
         with self._lock:
@@ -262,11 +269,17 @@ class CameraWorker(threading.Thread):
             annotated = results[0].plot()
             cv2.line(annotated, (line_x, 0), (line_x, h), (0, 255, 255), 2)
 
+            ann_boxes = []
             if results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 ids   = results[0].boxes.id.cpu().numpy().astype(int)
                 clses = results[0].boxes.cls.cpu().numpy().astype(int)
                 for box, tid, cls in zip(boxes, ids, clses):
+                    x1, y1, x2, y2 = box.tolist()
+                    ann_boxes.append({
+                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                        "id": int(tid), "class": int(cls),
+                    })
                     cx = int((box[0] + box[2]) / 2)
                     if tid not in self._state["first_x"]:
                         self._state["track_class"][tid] = int(cls)
@@ -292,7 +305,13 @@ class CameraWorker(threading.Thread):
                         (w - 110, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
 
             _, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            self.buf.put(jpeg.tobytes(), self._counts)
+            ann_data = {
+                "boxes": ann_boxes,
+                "line_x": self.line_x_frac,
+                "width": w,
+                "height": h,
+            }
+            self.buf.put(jpeg.tobytes(), self._counts, ann_data)
 
     def stop(self):
         self._stop.set()
@@ -510,6 +529,16 @@ def cameras_sync():
 def cameras_list():
     with _cam_lock:
         return {"cameras": list(camera_configs)}
+
+
+@app.route("/annotations/<int:cam_id>")
+def get_annotations(cam_id):
+    if cam_id >= len(buffers) or buffers[cam_id] is None:
+        return {"error": "not found"}, 404
+    ann = buffers[cam_id].get_annotations()
+    if ann is None:
+        return {"boxes": [], "line_x": 0.5, "width": 0, "height": 0}
+    return ann
 
 
 @app.route("/health")

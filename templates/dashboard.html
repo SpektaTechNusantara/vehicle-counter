@@ -117,6 +117,11 @@
     pointer-events: none;
   }
   .cam-feed-wrap.has-feed::before { content: none; }
+  .cam-overlay {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
 
   .cam-info {
     padding: 12px 16px;
@@ -542,21 +547,40 @@
       const cam = cams[i];
       const streamUrl = `/stream/${i}`;
       const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File', browser: 'Browser' }[cam.source] || 'File';
-      html += `<div class="cam-card">
-        <div class="cam-feed-wrap" id="wrap-${i}">
-          <img class="cam-feed" id="feed-${i}" src="${streamUrl}" alt="${cam.label}" onload="feedLoaded(${i})">
-        </div>
-        <div class="cam-info">
-          <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
-          <div class="cam-counts" id="counts-${i}"></div>
-          <div class="cam-actions">
-            <button class="cam-btn btn-start" id="toggle-${i}"
-                    onclick="toggleCam(${i}, this)">Start</button>
-            <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
-            <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+      if (cam.source === 'browser') {
+        html += `<div class="cam-card">
+          <div class="cam-feed-wrap" id="wrap-${i}">
+            <video class="cam-feed" id="vid-${i}" autoplay playsinline muted></video>
+            <canvas class="cam-overlay" id="ov-${i}"></canvas>
           </div>
-        </div>
-      </div>`;
+          <div class="cam-info">
+            <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(Browser)</span></span>
+            <div class="cam-counts" id="counts-${i}"></div>
+            <div class="cam-actions">
+              <button class="cam-btn btn-start" id="toggle-${i}"
+                      onclick="toggleCam(${i}, this)">Start</button>
+              <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+              <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="cam-card">
+          <div class="cam-feed-wrap" id="wrap-${i}">
+            <img class="cam-feed" id="feed-${i}" src="${streamUrl}" alt="${cam.label}" onload="feedLoaded(${i})">
+          </div>
+          <div class="cam-info">
+            <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
+            <div class="cam-counts" id="counts-${i}"></div>
+            <div class="cam-actions">
+              <button class="cam-btn btn-start" id="toggle-${i}"
+                      onclick="toggleCam(${i}, this)">Start</button>
+              <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+              <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+            </div>
+          </div>
+        </div>`;
+      }
     }
     grid.innerHTML = html;
   }
@@ -570,6 +594,39 @@
   function feedLoaded(id) {
     const wrap = document.getElementById(`wrap-${id}`);
     if (wrap) wrap.classList.add('has-feed');
+  }
+
+  function drawAnnotations(canvas, data, vw, vh) {
+    if (!canvas || !data || !data.boxes) return;
+    canvas.width = vw || 640;
+    canvas.height = vh || 480;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Counting line
+    const lineX = (data.line_x || 0.5) * canvas.width;
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath();
+    ctx.moveTo(lineX, 0);
+    ctx.lineTo(lineX, canvas.height);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Bounding boxes
+    const colors = { 0: '#00e5ff', 1: '#ff9800' };
+    for (const b of data.boxes) {
+      const c = colors[b.class] || '#8b949e';
+      const sx = canvas.width / data.width;
+      const sy = canvas.height / data.height;
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(b.x1 * sx, b.y1 * sy, (b.x2 - b.x1) * sx, (b.y2 - b.y1) * sy);
+      ctx.fillStyle = c;
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillText(`#${b.id}`, b.x1 * sx + 4, b.y1 * sy - 4);
+    }
   }
 
   // ── SSE live counts ──
@@ -722,6 +779,9 @@
     if (!cam || cam.source !== 'browser') return;
     if (browserStreams[id]) return; // already running
 
+    const video = document.getElementById(`vid-${id}`);
+    if (!video) return;
+
     try {
       let videoConstraint;
       if (cam.facingMode) {
@@ -730,25 +790,31 @@
         videoConstraint = { deviceId: { exact: cam.url } };
       }
       const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
-      const video = document.createElement('video');
       video.srcObject = stream;
-      video.playsinline = true;
-      video.muted = true;
       await video.play();
+      const wrap = document.getElementById(`wrap-${id}`);
+      if (wrap) wrap.classList.add('has-feed');
 
-      const interval = setInterval(() => {
+      const overlay = document.getElementById(`ov-${id}`);
+      const interval = setInterval(async () => {
         if (video.readyState < 2) return;
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext('2d').drawImage(video, 0, 0);
-        const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
-        fetch(`/camera/${id}/frame`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ frame: base64 })
-        }).catch(() => {});
-        canvas.remove();
+        const vw = video.videoWidth, vh = video.videoHeight;
+        const c = document.createElement('canvas');
+        c.width = vw; c.height = vh;
+        c.getContext('2d').drawImage(video, 0, 0);
+        const base64 = c.toDataURL('image/jpeg', 0.6).split(',')[1];
+        try {
+          const r = await fetch(`/camera/${id}/frame`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame: base64 })
+          });
+          // Fetch latest annotation data
+          const annRes = await fetch(`/annotations/${id}`);
+          const annData = await annRes.json();
+          drawAnnotations(overlay, annData, vw, vh);
+        } catch (_) {}
+        c.remove();
       }, 200); // 5 FPS
 
       browserStreams[id] = { stream, video, interval };
@@ -762,7 +828,9 @@
     if (!b) return;
     clearInterval(b.interval);
     b.stream.getTracks().forEach(t => t.stop());
-    b.video.remove();
+    b.video.srcObject = null;
+    const wrap = document.getElementById(`wrap-${id}`);
+    if (wrap) wrap.classList.remove('has-feed');
     delete browserStreams[id];
   }
 
