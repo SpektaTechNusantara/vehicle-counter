@@ -1,10 +1,9 @@
 """
 Multi-camera vehicle counter with live web dashboard.
+Cameras are configured from the browser UI (localStorage), not from cameras.yaml.
 
 Usage:
-    ./run_server.sh                          # uses cameras.yaml by default
-    ./run_server.sh --config cameras.yaml
-    ./run_server.sh --config cameras.yaml --port 8080
+    python server.py [--config cameras.yaml] [--port 5000]
 """
 
 import os
@@ -16,21 +15,17 @@ import json
 import yaml
 import argparse
 import cv2
-from flask import Flask, Response, render_template, stream_with_context
+from flask import Flask, Response, render_template, stream_with_context, request
 from waitress import serve
 from ultralytics import YOLO
 
-MJPEG_FPS = 25                          # max frame rate sent to browser
+MJPEG_FPS = 25
 MJPEG_INTERVAL = 1.0 / MJPEG_FPS
 
 
-# ── Layer 1: pure counting logic (no CV2, no model, no Flask) ───────────────
+# ── Layer 1: pure counting logic ───────────────────────────────────────────
 
 def check_crossing(tid, cx, line_x, state):
-    """
-    Returns True if track `tid` just crossed `line_x` this frame.
-    Mutates `state` in place.
-    """
     if tid not in state["first_x"]:
         state["first_x"][tid] = cx
 
@@ -46,20 +41,21 @@ def check_crossing(tid, cx, line_x, state):
     return crossed
 
 
-# ── FrameGrabber ─────────────────────────────────────────────────────────────
+# ── FrameGrabber ──────────────────────────────────────────────────────────
 
 class FrameGrabber(threading.Thread):
     """
-    Reads frames from an RTSP/file source continuously in its own thread.
+    Reads frames from RTSP/file/USB source continuously in its own thread.
     Always keeps only the newest frame so workers never process stale data.
     Auto-reconnects on RTSP drop; loops video files if loop=True.
     """
 
-    def __init__(self, url, cam_id, loop=False):
+    def __init__(self, url, cam_id, loop=False, source="file"):
         super().__init__(daemon=True, name=f"grabber-{cam_id}")
         self.url = url
         self.cam_id = cam_id
         self.loop = loop
+        self.source = source
         self._q = queue.Queue(maxsize=1)
         self._stop = threading.Event()
         self.connected = False
@@ -72,7 +68,10 @@ class FrameGrabber(threading.Thread):
 
     def run(self):
         while not self._stop.is_set():
-            cap = cv2.VideoCapture(self.url)
+            if self.source == "usb":
+                cap = cv2.VideoCapture(int(self.url))
+            else:
+                cap = cv2.VideoCapture(self.url)
             if not cap.isOpened():
                 print(f"[Cam {self.cam_id}] Cannot open {self.url!r} — retrying in 3 s")
                 time.sleep(3)
@@ -80,12 +79,9 @@ class FrameGrabber(threading.Thread):
 
             self.connected = True
             src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
-            # For local files, throttle reads to the video's native FPS so we
-            # don't decode hundreds of frames per second and thrash the GPU.
-            # For RTSP the stream itself sets the pace so no sleep is needed.
-            is_file = not str(self.url).startswith("rtsp")
+            is_file = self.source == "file"
             frame_interval = 1.0 / src_fps if is_file else 0
-            print(f"[Cam {self.cam_id}] Connected — {src_fps:.0f} fps source")
+            print(f"[Cam {self.cam_id}] Connected — {src_fps:.0f} fps source ({self.source})")
 
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -96,7 +92,6 @@ class FrameGrabber(threading.Thread):
                         continue
                     print(f"[Cam {self.cam_id}] Stream ended — reconnecting")
                     break
-                # Drop the previous frame if the worker hasn't consumed it yet
                 try:
                     self._q.get_nowait()
                 except queue.Empty:
@@ -118,19 +113,19 @@ class FrameGrabber(threading.Thread):
         self._stop.set()
 
 
-# ── FrameBuffer ───────────────────────────────────────────────────────────────
+# ── FrameBuffer ───────────────────────────────────────────────────────────
 
 class FrameBuffer:
     """Thread-safe slot holding the latest annotated JPEG and counts."""
 
     def __init__(self, label):
         self.label = label
-        self.active_classes: list[int] = []   # set by CameraWorker after init
-        self.running = True                   # reflects worker pause state
+        self.active_classes: list[int] = []
+        self.running = True
         self._lock = threading.Lock()
         self._jpeg = None
         self._counts: dict[int, int] = {}
-        self._seq = 0           # incremented on every new frame
+        self._seq = 0
 
     def put(self, jpeg_bytes, counts):
         with self._lock:
@@ -143,14 +138,12 @@ class FrameBuffer:
             return self._jpeg
 
     def get_jpeg_if_new(self, last_seq):
-        """Returns (jpeg, seq) if a newer frame is available, else (None, last_seq)."""
         with self._lock:
             if self._seq == last_seq or self._jpeg is None:
                 return None, last_seq
             return self._jpeg, self._seq
 
     def reset_counts(self, counts):
-        """Zero counts only — does NOT touch the JPEG frame or seq."""
         with self._lock:
             self._counts = dict(counts)
 
@@ -159,7 +152,7 @@ class FrameBuffer:
             return dict(self._counts)
 
 
-# ── CameraWorker ──────────────────────────────────────────────────────────────
+# ── CameraWorker ──────────────────────────────────────────────────────────
 
 CLASS_NAMES   = {0: "haul_truck", 1: "other_vehicles"}
 CLASS_INDICES = {"haul_truck": 0, "other_vehicles": 1}
@@ -182,7 +175,6 @@ class CameraWorker(threading.Thread):
         self.model_path = global_cfg["model"]
         self.tracker_path = global_cfg["tracker"]
         self.conf = global_cfg.get("conf", 0.25)
-        # Which classes to detect, track and count — names from cameras.yaml
         show = global_cfg.get("show_classes", list(CLASS_INDICES.keys()))
         self.active_classes = [CLASS_INDICES[n] for n in show if n in CLASS_INDICES]
         self._stop = threading.Event()
@@ -196,9 +188,9 @@ class CameraWorker(threading.Thread):
         self._counts = {cls: 0 for cls in self.active_classes}
         self._lock = threading.Lock()
         self._paused = threading.Event()
-        self._paused.set()      # start paused — user clicks Start to activate
+        self._paused.set()
         buf.active_classes = self.active_classes
-        buf.running = False     # reflect initial stopped state
+        buf.running = False
 
     def pause(self):
         self._paused.set()
@@ -215,12 +207,9 @@ class CameraWorker(threading.Thread):
             self._state["first_x"].clear()
             self._state["prev_x"].clear()
             self._state["track_class"].clear()
-        # Zero the buffer counts immediately so SSE sees 0 on its very next tick.
-        # Use reset_counts() — never buf.put() here — to avoid corrupting the MJPEG stream.
         self.buf.reset_counts(self._counts)
 
     def run(self):
-        # Stagger workers so they don't hit the GPU simultaneously at startup
         time.sleep(self.cam_id * 0.5)
         model = YOLO(self.model_path, task="detect")
         ftimes = []
@@ -263,7 +252,6 @@ class CameraWorker(threading.Thread):
                         with self._lock:
                             self._counts[self._state["track_class"][tid]] += 1
 
-            # Overlays — only show active classes
             cv2.putText(annotated, self.buf.label,
                         (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
             y = 58
@@ -288,17 +276,100 @@ class CameraWorker(threading.Thread):
         self._stop.set()
 
 
-# ── Flask app ─────────────────────────────────────────────────────────────────
+# ── Dynamic camera management ─────────────────────────────────────────────
 
 app = Flask(__name__)
-buffers: list[FrameBuffer] = []       # populated in main() before app.run()
+buffers: list[FrameBuffer] = []
 workers: list[CameraWorker] = []
+grabbers: list[FrameGrabber] = []
+camera_configs: list[dict] = []
+_cam_lock = threading.Lock()
+_global_cfg: dict = {}
 
 
-_TICK = 0.005   # 5ms sleep granularity — threads release quickly on disconnect
+def _make_camera(i, cam_cfg, global_cfg):
+    """Create grabber + worker + buffer for one camera (does not start threads)."""
+    url   = cam_cfg["url"]
+    label = cam_cfg.get("label", f"Camera {i}")
+    loop  = cam_cfg.get("loop", False)
+    source = cam_cfg.get("source", "file")
+
+    buf     = FrameBuffer(label)
+    grabber = FrameGrabber(url, i, loop=loop, source=source)
+    worker  = CameraWorker(i, grabber, buf, cam_cfg, global_cfg)
+    return buf, grabber, worker
+
+
+def _start_camera(i, cam_cfg, global_cfg):
+    """Create, append to globals, and start grabber + worker threads."""
+    buf, grabber, worker = _make_camera(i, cam_cfg, global_cfg)
+    buffers.append(buf)
+    grabbers.append(grabber)
+    workers.append(worker)
+    grabber.start()
+    worker.start()
+    return buf, grabber, worker
+
+
+def _remove_camera(i):
+    """Stop and remove camera threads + buffers at index i."""
+    if i < len(workers):
+        workers[i].stop()
+        grabbers[i].stop()
+    # Remove from lists (order matters — pop larger index first is safer but
+    # we always remove in reverse order from the caller).
+    if i < len(buffers):
+        buffers.pop(i)
+    if i < len(grabbers):
+        grabbers.pop(i)
+    if i < len(workers):
+        workers.pop(i)
+
+
+def sync_cameras(incoming: list[dict], global_cfg: dict):
+    """
+    Replace the server camera list with `incoming`.
+    Adds new cameras, removes deleted ones, restarts changed ones.
+    Called from the /cameras/sync endpoint and optionally from main().
+    """
+    global camera_configs
+    with _cam_lock:
+        old_count = len(buffers)
+        new_count = len(incoming)
+
+        # Stop removed cameras (iterate in reverse so indices stay valid)
+        for i in range(old_count - 1, new_count - 1, -1):
+            _remove_camera(i)
+
+        # Resize lists to match new count
+        while len(buffers) < new_count:
+            buffers.append(None)
+            grabbers.append(None)
+            workers.append(None)
+
+        for i, cam_cfg in enumerate(incoming):
+            existing = camera_configs[i] if i < len(camera_configs) else None
+            if existing != cam_cfg:
+                if existing is not None:
+                    if i < old_count:
+                        workers[i].stop()
+                        grabbers[i].stop()
+                buf, grabber, worker = _make_camera(i, cam_cfg, global_cfg)
+                buffers[i] = buf
+                grabbers[i] = grabber
+                workers[i] = worker
+                grabber.start()
+                worker.start()
+
+        camera_configs = list(incoming)
+
+
+# ── Flask routes ─────────────────────────────────────────────────────────
+
+_TICK = 0.005
+
 
 def _mjpeg(cam_id):
-    """Generator yielding MJPEG frames, capped at MJPEG_FPS, skipping duplicates."""
     last_seq = -1
     try:
         while True:
@@ -309,8 +380,6 @@ def _mjpeg(cam_id):
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 )
-            # Sleep in small ticks so a disconnecting client releases the
-            # Waitress thread within ~5ms rather than up to 40ms.
             elapsed = time.monotonic() - t0
             remaining = MJPEG_INTERVAL - elapsed
             while remaining > 0:
@@ -321,29 +390,32 @@ def _mjpeg(cam_id):
 
 
 def _sse_counts():
-    """Generator yielding SSE events with JSON counts every second."""
     while True:
         counts_snapshot = {}
-        for i, b in enumerate(buffers):
-            raw = b.get_counts()
-            counts_snapshot[str(i)] = {
-                "label": b.label,
-                "running": b.running,
-                **{CLASS_NAMES[cls]: raw.get(cls, 0) for cls in b.active_classes},
-            }
+        with _cam_lock:
+            for i, b in enumerate(buffers):
+                if b is None:
+                    continue
+                raw = b.get_counts()
+                counts_snapshot[str(i)] = {
+                    "label": b.label,
+                    "running": b.running,
+                    **{CLASS_NAMES[cls]: raw.get(cls, 0) for cls in b.active_classes},
+                }
         yield f"data: {json.dumps(counts_snapshot)}\n\n"
         time.sleep(1)
 
 
 @app.route("/")
 def dashboard():
-    cams = [{"id": i, "label": b.label} for i, b in enumerate(buffers)]
+    with _cam_lock:
+        cams = [{"id": i, "label": b.label} for i, b in enumerate(buffers) if b is not None]
     return render_template("dashboard.html", cameras=cams)
 
 
 @app.route("/stream/<int:cam_id>")
 def stream(cam_id):
-    if cam_id >= len(buffers):
+    if cam_id >= len(buffers) or buffers[cam_id] is None:
         return "Not found", 404
     return Response(
         _mjpeg(cam_id),
@@ -362,7 +434,7 @@ def counts_sse():
 
 @app.route("/reset/<int:cam_id>", methods=["POST"])
 def reset_cam(cam_id):
-    if cam_id >= len(workers):
+    if cam_id >= len(workers) or workers[cam_id] is None:
         return {"error": "not found"}, 404
     workers[cam_id].reset()
     return {"status": "ok", "cam_id": cam_id}
@@ -370,7 +442,7 @@ def reset_cam(cam_id):
 
 @app.route("/stop/<int:cam_id>", methods=["POST"])
 def stop_cam(cam_id):
-    if cam_id >= len(workers):
+    if cam_id >= len(workers) or workers[cam_id] is None:
         return {"error": "not found"}, 404
     workers[cam_id].pause()
     return {"status": "ok", "running": False}
@@ -378,73 +450,113 @@ def stop_cam(cam_id):
 
 @app.route("/start/<int:cam_id>", methods=["POST"])
 def start_cam(cam_id):
-    if cam_id >= len(workers):
+    if cam_id >= len(workers) or workers[cam_id] is None:
         return {"error": "not found"}, 404
     workers[cam_id].resume()
     return {"status": "ok", "running": True}
 
 
+@app.route("/cameras/sync", methods=["POST"])
+def cameras_sync():
+    global _global_cfg
+    incoming = request.get_json(force=True)
+    if not isinstance(incoming, list):
+        return {"error": "expected array"}, 400
+    sync_cameras(incoming, _global_cfg)
+    return {"status": "ok", "count": len(incoming)}
+
+
+@app.route("/cameras/list")
+def cameras_list():
+    with _cam_lock:
+        return {"cameras": list(camera_configs)}
+
+
 @app.route("/health")
 def health():
-    return {"status": "ok", "cameras": len(buffers)}
+    with _cam_lock:
+        return {"status": "ok", "cameras": len([b for b in buffers if b is not None])}
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=None, help="Path to cameras.yaml")
+    parser.add_argument("--config", default=None, help="Path to cameras.yaml (optional)")
     parser.add_argument("--port", type=int, default=None, help="Override port from config")
     args = parser.parse_args()
 
-    # Default config path: cameras.yaml next to this script
-    if args.config is None:
-        args.config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cameras.yaml")
+    global _global_cfg
 
-    cfg_dir = os.path.dirname(os.path.abspath(args.config))
+    _global_cfg = {
+        "model":   os.path.join(os.path.dirname(os.path.abspath(__file__)), "vcmodel1.onnx"),
+        "tracker": os.path.join(os.path.dirname(os.path.abspath(__file__)), "bytetrack.yaml"),
+        "conf":    0.25,
+        "show_classes": ["haul_truck"],
+    }
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+    host = "0.0.0.0"
+    port = 5000
 
-    # Resolve tracker path relative to the config file if not absolute
-    tracker = cfg.get("tracker", "bytetrack.yaml")
-    if not os.path.isabs(tracker):
-        cfg["tracker"] = os.path.join(cfg_dir, tracker)
+    # Optionally load initial camera config from YAML
+    if args.config:
+        cfg_path = args.config
+    else:
+        default_yaml = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cameras.yaml")
+        if os.path.exists(default_yaml):
+            cfg_path = default_yaml
+        else:
+            cfg_path = None
 
-    global buffers, workers
-    grabbers = []
+    if cfg_path:
+        cfg_dir = os.path.dirname(os.path.abspath(cfg_path))
+        with open(cfg_path) as f:
+            yaml_cfg = yaml.safe_load(f)
 
-    for i, cam_cfg in enumerate(cfg["cameras"]):
-        url   = cam_cfg["url"]
-        label = cam_cfg.get("label", f"Camera {i}")
-        loop  = cam_cfg.get("loop", False)
+        # Merge YAML values into global config
+        if "model" in yaml_cfg:
+            _global_cfg["model"] = yaml_cfg["model"]
+        if "tracker" in yaml_cfg:
+            _global_cfg["tracker"] = yaml_cfg["tracker"]
+        if "conf" in yaml_cfg:
+            _global_cfg["conf"] = yaml_cfg["conf"]
+        if "show_classes" in yaml_cfg:
+            _global_cfg["show_classes"] = yaml_cfg["show_classes"]
+        if "host" in yaml_cfg:
+            host = yaml_cfg["host"]
+        if "port" in yaml_cfg:
+            port = yaml_cfg["port"]
 
-        buf     = FrameBuffer(label)
-        grabber = FrameGrabber(url, i, loop=loop)
-        worker  = CameraWorker(i, grabber, buf, cam_cfg, cfg)
+        # Resolve tracker path relative to config dir
+        if not os.path.isabs(_global_cfg["tracker"]):
+            _global_cfg["tracker"] = os.path.join(cfg_dir, _global_cfg["tracker"])
+        if not os.path.isabs(_global_cfg["model"]):
+            _global_cfg["model"] = os.path.join(cfg_dir, _global_cfg["model"])
 
-        buffers.append(buf)
-        grabbers.append(grabber)
-        workers.append(worker)
+        # Load cameras from YAML as initial config
+        if "cameras" in yaml_cfg:
+            # Add default source type if not specified
+            for cam in yaml_cfg["cameras"]:
+                if "source" not in cam:
+                    url = cam["url"]
+                    if str(url).lstrip("-").isdigit():
+                        cam["source"] = "usb"
+                    elif str(url).startswith("rtsp"):
+                        cam["source"] = "rtsp"
+                    else:
+                        cam["source"] = "file"
+            sync_cameras(yaml_cfg["cameras"], _global_cfg)
 
-    host = cfg.get("host", "0.0.0.0")
-    port = args.port or cfg.get("port", 5000)
+    port = args.port or port
 
     print(f"\n  Dashboard → http://localhost:{port}/")
-    print(f"  Cameras   : {len(buffers)} (all paused — click Start on each camera)")
-    print(f"  Model     : {cfg['model']}")
-
-    # Start grabbers and workers in background — web server is available immediately.
-    # Workers start paused; user activates each camera via the dashboard.
-    for g in grabbers:
-        g.start()
-    for w in workers:
-        w.start()
+    print(f"  Model     : {_global_cfg['model']}")
+    print(f"  Tracker   : {_global_cfg['tracker']}")
+    cam_count = len([b for b in buffers if b is not None])
+    print(f"  Cameras   : {cam_count} (add/remove from browser UI)")
     print()
 
-    # Each browser tab needs (n_cameras + 1) threads for MJPEG + SSE.
-    # Allocate enough for ~4 simultaneous clients plus headroom.
-    thread_count = max(32, (len(buffers) + 1) * 4)
+    thread_count = max(32, (cam_count + 1) * 4)
     serve(app, host=host, port=port, threads=thread_count)
 
 

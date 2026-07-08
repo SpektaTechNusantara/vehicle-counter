@@ -13,7 +13,6 @@
     flex-direction: column;
   }
 
-  /* ── Header ── */
   header {
     background: #161b22;
     border-bottom: 1px solid #30363d;
@@ -22,6 +21,8 @@
     align-items: center;
     justify-content: space-between;
     flex-shrink: 0;
+    gap: 12px;
+    flex-wrap: wrap;
   }
   .logo {
     display: flex;
@@ -50,8 +51,19 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
   }
+  .btn-add-cam {
+    padding: 6px 16px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    background: #238636;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-add-cam:hover { background: #2ea043; }
 
-  /* ── Camera grid ── */
   main {
     flex: 1;
     padding: 20px;
@@ -60,6 +72,14 @@
     gap: 16px;
     align-content: start;
   }
+  #empty-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #8b949e;
+    font-size: 0.95rem;
+  }
+  #empty-state strong { color: #e6edf3; }
 
   .cam-card {
     background: #161b22;
@@ -85,9 +105,8 @@
     object-fit: contain;
     display: block;
   }
-  /* Spinner shown while feed loads */
   .cam-feed-wrap::before {
-    content: "Connecting…";
+    content: "Connecting\u2026";
     position: absolute;
     inset: 0;
     display: flex;
@@ -134,7 +153,33 @@
   .num-ht  { color: #00e5ff; }
   .num-ov  { color: #ff9800; }
 
-  /* ── Footer totals ── */
+  .cam-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .cam-btn {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    background: transparent;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    border: 1px solid #30363d;
+    color: #8b949e;
+  }
+  .cam-btn:hover { color: #e6edf3; border-color: #8b949e; }
+  .cam-btn.flash { color: #3fb950; border-color: #3fb950; }
+  .btn-stop  { border-color: #f8514950; color: #f85149; }
+  .btn-stop:hover  { background: #f8514915; border-color: #f85149; }
+  .btn-start { border-color: #3fb95060; color: #3fb950; }
+  .btn-start:hover { background: #3fb95015; border-color: #3fb950; }
+  .btn-delete { border-color: #f8514950; color: #f85149; }
+  .btn-delete:hover { background: #f8514915; border-color: #f85149; }
+
   footer {
     background: #161b22;
     border-top: 1px solid #30363d;
@@ -176,30 +221,79 @@
     background: #30363d;
     flex-shrink: 0;
   }
-  .cam-actions {
+
+  /* ── Modal ── */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
     display: flex;
-    gap: 6px;
-    margin-left: auto;
-    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
   }
-  .cam-btn {
-    padding: 4px 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    background: transparent;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  .modal-overlay.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .modal {
+    background: #161b22;
     border: 1px solid #30363d;
-    color: #8b949e;
+    border-radius: 12px;
+    padding: 28px;
+    width: 440px;
+    max-width: 94vw;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
   }
-  .cam-btn:hover { color: #e6edf3; border-color: #8b949e; }
-  .cam-btn.flash { color: #3fb950; border-color: #3fb950; }
-  .btn-stop  { border-color: #f8514950; color: #f85149; }
-  .btn-stop:hover  { background: #f8514915; border-color: #f85149; }
-  .btn-start { border-color: #3fb95060; color: #3fb950; }
-  .btn-start:hover { background: #3fb95015; border-color: #3fb950; }
+  .modal h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+  .modal label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .modal input, .modal select {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: #e6edf3;
+    font-size: 0.9rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .modal input:focus, .modal select:focus { border-color: #58a6ff; }
+  .modal .field { display: flex; flex-direction: column; gap: 5px; }
+  .modal .row { display: flex; gap: 12px; }
+  .modal .row .field { flex: 1; }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 4px;
+  }
+  .modal-actions button {
+    padding: 8px 20px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    border: none;
+  }
+  .btn-cancel { background: #21262d; color: #e6edf3; }
+  .btn-cancel:hover { background: #30363d; }
+  .btn-save   { background: #238636; color: #fff; }
+  .btn-save:hover   { background: #2ea043; }
 </style>
 
 <header>
@@ -207,44 +301,77 @@
     <div class="live-dot"></div>
     Mining Site Vehicle Counter
   </div>
-  <div id="clock">--:--:--</div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <button class="btn-add-cam" onclick="showAddModal()">+ Add Camera</button>
+    <div id="clock">--:--:--</div>
+  </div>
 </header>
 
-<main>
-  {% for cam in cameras %}
-  <div class="cam-card">
-    <div class="cam-feed-wrap">
-      <img class="cam-feed" src="/stream/{{ cam.id }}" alt="{{ cam.label }}">
-    </div>
-    <div class="cam-info">
-      <span class="cam-label">{{ cam.label }}</span>
-      <div class="cam-counts" id="counts-{{ cam.id }}">
-        <!-- filled dynamically from SSE -->
-      </div>
-      <div class="cam-actions">
-        <button class="cam-btn btn-start" id="toggle-{{ cam.id }}"
-                onclick="toggleCam({{ cam.id }}, this)">Start</button>
-        <button class="cam-btn" onclick="resetCam({{ cam.id }}, this)">Reset</button>
-      </div>
-    </div>
+<main id="cam-grid">
+  <div id="empty-state">
+    <strong>No cameras configured.</strong><br>
+    Click <strong>+ Add Camera</strong> to add your first camera.
   </div>
-  {% endfor %}
 </main>
 
 <footer id="footer-totals">
   <span class="total-tag">All Cameras Total</span>
-  <!-- filled dynamically from SSE -->
 </footer>
 
+<!-- ── Add Camera Modal ── -->
+<div class="modal-overlay" id="add-modal">
+  <div class="modal">
+    <h2>Add Camera</h2>
+
+    <div class="field">
+      <label>Source Type</label>
+      <select id="cam-source">
+        <option value="usb">USB Camera</option>
+        <option value="rtsp">RTSP Stream</option>
+        <option value="file">Video File</option>
+      </select>
+    </div>
+
+    <div class="field" id="url-field">
+      <label id="url-label">Camera Index</label>
+      <input id="cam-url" type="text" value="0" placeholder="0">
+    </div>
+
+    <div class="field">
+      <label>Label</label>
+      <input id="cam-label" type="text" placeholder="Gate A">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Line Position</label>
+        <input id="cam-linex" type="number" min="0" max="1" step="0.05" value="0.5">
+      </div>
+      <div class="field" id="loop-field">
+        <label>Loop</label>
+        <select id="cam-loop">
+          <option value="true">Yes</option>
+          <option value="false" selected>No</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="hideAddModal()">Cancel</button>
+      <button class="btn-save" onclick="saveCamera()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
-  // Live clock
+  // ── Live clock ──
   (function tick() {
     document.getElementById('clock').textContent =
       new Date().toLocaleTimeString('en-GB');
     setTimeout(tick, 1000);
   })();
 
-  // Color palette keyed by class name
+  // ── Color palette ──
   const CLASS_COLORS = {
     haul_truck:     { dot: '#00e5ff', text: '#00e5ff' },
     other_vehicles: { dot: '#ff9800', text: '#ff9800' },
@@ -255,8 +382,160 @@
     return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }
 
-  // Build per-camera count chips from first SSE payload
-  let initialized = false;
+  // ── localStorage persistence ──
+  const STORAGE_KEY = 'vehicle-counter-cameras';
+
+  function loadConfig() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+
+  function saveConfig(cams) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cams));
+  }
+
+  // ── Modal ──
+  function showAddModal() {
+    document.getElementById('add-modal').classList.add('open');
+    document.getElementById('cam-source').value = 'usb';
+    document.getElementById('cam-url').value = '0';
+    document.getElementById('cam-label').value = '';
+    document.getElementById('cam-linex').value = '0.5';
+    document.getElementById('cam-loop').value = 'false';
+    updateUrlField();
+  }
+
+  function hideAddModal() {
+    document.getElementById('add-modal').classList.remove('open');
+  }
+
+  function updateUrlField() {
+    const src = document.getElementById('cam-source').value;
+    const label = document.getElementById('url-label');
+    const input = document.getElementById('cam-url');
+    const loopF = document.getElementById('loop-field');
+    if (src === 'usb') {
+      label.textContent = 'Camera Index';
+      input.placeholder = '0';
+      input.value = '0';
+      loopF.style.display = 'none';
+    } else if (src === 'rtsp') {
+      label.textContent = 'RTSP URL';
+      input.placeholder = 'rtsp://username:password@192.168.1.50:554/stream';
+      input.value = '';
+      loopF.style.display = 'none';
+    } else {
+      label.textContent = 'File Path';
+      input.placeholder = 'videos/gate_a.mp4';
+      input.value = '';
+      loopF.style.display = '';
+    }
+  }
+  document.getElementById('cam-source').addEventListener('change', updateUrlField);
+
+  function saveCamera() {
+    const source = document.getElementById('cam-source').value;
+    const url = document.getElementById('cam-url').value.trim();
+    const label = document.getElementById('cam-label').value.trim() || 'Camera';
+    const line_x = parseFloat(document.getElementById('cam-linex').value) || 0.5;
+    const loop = document.getElementById('cam-loop').value === 'true';
+    if (!url) return alert('URL / Index is required');
+
+    const cams = loadConfig();
+    cams.push({ url, label, line_x, loop, source });
+    saveConfig(cams);
+    hideAddModal();
+    syncAndRender();
+  }
+
+  // ── Delete camera ──
+  function deleteCamera(index) {
+    if (!confirm('Remove this camera?')) return;
+    const cams = loadConfig();
+    cams.splice(index, 1);
+    saveConfig(cams);
+    syncAndRender();
+  }
+
+  // ── Sync with server + render ──
+  async function syncAndRender() {
+    let cams = loadConfig();
+
+    // First visit: pull server's current camera list as default
+    if (cams.length === 0) {
+      try {
+        const res = await fetch('/cameras/list');
+        const data = await res.json();
+        if (data.cameras && data.cameras.length > 0) {
+          cams = data.cameras;
+          saveConfig(cams);
+        }
+      } catch (_) {}
+    }
+
+    try {
+      const res = await fetch('/cameras/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cams),
+      });
+      if (!res.ok) throw new Error('sync failed');
+    } catch (e) {
+      console.error('Sync error:', e);
+    }
+    renderCameras();
+  }
+
+  function renderCameras() {
+    const cams = loadConfig();
+    const grid = document.getElementById('cam-grid');
+    const emptyState = document.getElementById('empty-state');
+
+    if (cams.length === 0) {
+      grid.innerHTML = `<div id="empty-state">
+        <strong>No cameras configured.</strong><br>
+        Click <strong>+ Add Camera</strong> to add your first camera.
+      </div>`;
+      // Reset footer
+      document.getElementById('footer-totals').innerHTML =
+        '<span class="total-tag">All Cameras Total</span>';
+      return;
+    }
+
+    let html = '';
+    for (let i = 0; i < cams.length; i++) {
+      const cam = cams[i];
+      const streamUrl = `/stream/${i}`;
+      const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File' }[cam.source] || 'File';
+      html += `<div class="cam-card">
+        <div class="cam-feed-wrap">
+          <img class="cam-feed" src="${streamUrl}" alt="${cam.label}">
+        </div>
+        <div class="cam-info">
+          <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
+          <div class="cam-counts" id="counts-${i}"></div>
+          <div class="cam-actions">
+            <button class="cam-btn btn-start" id="toggle-${i}"
+                    onclick="toggleCam(${i}, this)">Start</button>
+            <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+            <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    grid.innerHTML = html;
+  }
+
+  function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ── SSE live counts ──
+  let sseInitialized = false;
 
   function buildCamCounts(id, classKeys) {
     const el = document.getElementById('counts-' + id);
@@ -287,27 +566,36 @@
     footer.innerHTML = '<span class="total-tag">All Cameras Total</span>' + items;
   }
 
-  // Live counts via Server-Sent Events
+  // ── SSE live counts ──
   const es = new EventSource('/counts');
 
   es.onmessage = function (e) {
     const data = JSON.parse(e.data);
 
-    // On first message, build DOM structure from whatever classes the server sends
-    if (!initialized) {
+    // Build count chips on demand (handles cameras added after render)
+    let allClassKeys = [];
+    for (const [id, cam] of Object.entries(data)) {
+      const btn = document.getElementById('toggle-' + id);
+      if (btn) applyRunningState(btn, cam.running);
+
+      const countsEl = document.getElementById('counts-' + id);
+      if (countsEl && !countsEl.hasChildNodes()) {
+        const classKeys = Object.keys(cam).filter(k => k !== 'label' && k !== 'running');
+        buildCamCounts(id, classKeys);
+        allClassKeys = classKeys;
+      }
+    }
+
+    // Build footer on first data
+    if (!sseInitialized) {
       const firstCam = Object.values(data)[0] || {};
       const classKeys = Object.keys(firstCam).filter(k => k !== 'label' && k !== 'running');
-      for (const id of Object.keys(data)) buildCamCounts(id, classKeys);
-      buildFooter(classKeys);
-      initialized = true;
+      if (classKeys.length) buildFooter(classKeys);
+      sseInitialized = true;
     }
 
     const totals = {};
     for (const [id, cam] of Object.entries(data)) {
-      // Update stop/start button state
-      const btn = document.getElementById('toggle-' + id);
-      if (btn) applyRunningState(btn, cam.running);
-
       for (const [key, val] of Object.entries(cam)) {
         if (key === 'label' || key === 'running') continue;
         const el = document.getElementById(`cls-${id}-${key}`);
@@ -321,7 +609,7 @@
     }
   };
 
-  es.onerror = function () { /* browser auto-reconnects */ };
+  es.onerror = function () {};
 
   function applyRunningState(btn, running) {
     if (running) {
@@ -347,10 +635,8 @@
     fetch(`/reset/${id}`, { method: 'POST' })
       .then(r => r.json())
       .then(() => {
-        // Zero count elements immediately without waiting for next SSE tick
         document.querySelectorAll(`#counts-${id} .count-num`)
           .forEach(el => el.textContent = '0');
-        // Recompute footer totals
         const totals = {};
         document.querySelectorAll('[id^="cls-"]').forEach(el => {
           const key = el.id.replace(/^cls-\d+-/, '');
@@ -364,4 +650,9 @@
         setTimeout(() => btn.classList.remove('flash'), 600);
       });
   }
+
+  // ── Init ──
+  document.addEventListener('DOMContentLoaded', function () {
+    syncAndRender();
+  });
 </script>
