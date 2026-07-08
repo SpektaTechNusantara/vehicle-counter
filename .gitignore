@@ -9,7 +9,6 @@ secrets.yml
 cameras.local.yaml
 
 # ── Model files ───────────────────────────────────────────────────────────────
-*.onnx
 *.pt
 *.pth
 *.weights
