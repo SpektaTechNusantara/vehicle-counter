@@ -1,0 +1,51 @@
+# ── Credentials & secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+secrets.yaml
+secrets.yml
+
+# cameras.local.yaml is for production configs that contain RTSP credentials
+# (rtsp://user:password@ip/stream). Keep cameras.yaml as a safe template.
+cameras.local.yaml
+
+# ── Model files ───────────────────────────────────────────────────────────────
+*.onnx
+*.pt
+*.pth
+*.weights
+*.engine       # TensorRT compiled engine (GPU-specific, must be recompiled per machine)
+*.trt
+
+# ── Output videos ────────────────────────────────────────────────────────────
+*_counted.mp4
+output_*.mp4
+
+# ── Input videos (too large for git) ─────────────────────────────────────────
+videos/*.mp4
+videos/*.avi
+videos/*.mov
+!videos/.gitkeep
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── TensorRT cache ────────────────────────────────────────────────────────────
+trt_cache/
+*.trtcache
+
+# ── OS / IDE ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

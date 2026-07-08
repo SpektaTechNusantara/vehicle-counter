@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  vehicle-counter:
+    build: .
+    container_name: vehicle-counter
+    ports:
+      - "5000:5000"
+    volumes:
+      # Mount model ONNX
+      - ./vcmodel1.onnx:/app/vcmodel1.onnx
+      # Mount folder video (letakkan video disini)
+      - ./videos:/app/videos
+      # Mount config (jika ingin modifikasi tanpa rebuild)
+      - ./cameras.yaml:/app/cameras.yaml
+      - ./bytetrack.yaml:/app/bytetrack.yaml
+    environment:
+      - CONFIG=cameras.yaml
+      - PORT=5000
+    restart: unless-stopped

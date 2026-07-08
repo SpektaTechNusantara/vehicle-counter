@@ -1,0 +1,8 @@
+# CPU version. For GPU, replace onnxruntime with onnxruntime-gpu
+onnxruntime>=1.15.0
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+flask>=3.0.0
+waitress>=2.1.0
+pyyaml>=6.0
+numpy>=1.24.0

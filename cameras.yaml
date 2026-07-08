@@ -1,0 +1,50 @@
+# ── Model & tracking ──────────────────────────────────────────────────────────
+# Sesuaikan dengan file ONNX yang ada (vcmodel1.onnx).
+model:   vcmodel1.onnx
+tracker: bytetrack.yaml
+conf:    0.25
+
+# Classes to detect, track and display.
+# Remove other_vehicles to hide it completely from stream and counts.
+# Options: haul_truck, other_vehicles
+show_classes:
+  - haul_truck
+
+# ── Web server ────────────────────────────────────────────────────────────────
+host: 0.0.0.0
+port: 5000
+
+# ── Cameras ───────────────────────────────────────────────────────────────────
+cameras:
+  - url:   videos/gate_a.mp4
+    label: "Gate A"
+    line_x: 0.5
+    loop:  true
+
+  - url:   videos/gate_b.mp4
+    label: "Gate B"
+    line_x: 0.5
+    loop:  true
+
+  - url:   videos/gate_c.mp4
+    label: "Gate C"
+    line_x: 0.5
+    loop:  true
+
+  - url:   videos/pit_entry.mp4
+    label: "Pit Entry"
+    line_x: 0.4
+    loop:  true
+
+  - url:   videos/dump_area.mp4
+    label: "Dump Area"
+    line_x: 0.6
+    loop:  true
+
+# ── Notes ──────────────────────────────────────────────────────────────────────
+# Replace url values with real RTSP streams when cameras are connected:
+#   url: rtsp://username:password@192.168.1.50:554/stream
+#   loop: false
+#
+# For configs with RTSP credentials, save as cameras.local.yaml (gitignored):
+#   python server.py --config cameras.local.yaml
