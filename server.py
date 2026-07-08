@@ -12,9 +12,11 @@ import time
 import threading
 import queue
 import json
+import base64
 import yaml
 import argparse
 import cv2
+import numpy as np
 from flask import Flask, Response, render_template, stream_with_context, request
 from waitress import serve
 from ultralytics import YOLO
@@ -46,6 +48,7 @@ def check_crossing(tid, cx, line_x, state):
 class FrameGrabber(threading.Thread):
     """
     Reads frames from RTSP/file/USB source continuously in its own thread.
+    For 'browser' source, frames are fed via feed_frame() from the Flask endpoint.
     Always keeps only the newest frame so workers never process stale data.
     Auto-reconnects on RTSP drop; loops video files if loop=True.
     """
@@ -66,7 +69,26 @@ class FrameGrabber(threading.Thread):
         except queue.Empty:
             return None
 
+    def feed_frame(self, jpeg_bytes):
+        """For 'browser' source: receive a JPEG frame from the Flask endpoint."""
+        frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return
+        try:
+            self._q.get_nowait()
+        except queue.Empty:
+            pass
+        self._q.put(frame)
+
     def run(self):
+        if self.source == "browser":
+            # Browser source: no capture loop; frames arrive via feed_frame()
+            self.connected = True
+            print(f"[Cam {self.cam_id}] Browser source — waiting for frames")
+            while not self._stop.is_set():
+                time.sleep(0.1)
+            return
+
         while not self._stop.is_set():
             if self.source == "usb":
                 cap = cv2.VideoCapture(int(self.url))
@@ -454,6 +476,18 @@ def start_cam(cam_id):
         return {"error": "not found"}, 404
     workers[cam_id].resume()
     return {"status": "ok", "running": True}
+
+
+@app.route("/camera/<int:cam_id>/frame", methods=["POST"])
+def camera_frame(cam_id):
+    """Receive a JPEG frame from a browser-based camera."""
+    data = request.get_json(force=True)
+    jpeg_bytes = base64.b64decode(data["frame"])
+    with _cam_lock:
+        if cam_id >= len(grabbers) or grabbers[cam_id] is None:
+            return {"error": "not found"}, 404
+        grabbers[cam_id].feed_frame(jpeg_bytes)
+    return {"status": "ok"}
 
 
 @app.route("/cameras/sync", methods=["POST"])

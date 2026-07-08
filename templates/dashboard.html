@@ -326,15 +326,27 @@
     <div class="field">
       <label>Source Type</label>
       <select id="cam-source">
-        <option value="usb">USB Camera</option>
+        <option value="usb">USB Camera (server)</option>
         <option value="rtsp">RTSP Stream</option>
         <option value="file">Video File</option>
+        <option value="browser">Browser Camera (this device)</option>
       </select>
     </div>
 
     <div class="field" id="url-field">
       <label id="url-label">Camera Index</label>
       <input id="cam-url" type="text" value="0" placeholder="0">
+    </div>
+
+    <div class="field" id="facing-field" style="display:none">
+      <label>Device Camera</label>
+      <div style="display:flex;gap:8px">
+        <select id="cam-devices" style="flex:1">
+          <option value="">(click Detect to scan)</option>
+        </select>
+        <button class="cam-btn" onclick="detectCameras()" type="button"
+                style="white-space:nowrap;padding:8px 12px;border:1px solid #58a6ff;color:#58a6ff;background:transparent;border-radius:6px;cursor:pointer;font-size:0.8rem;font-weight:600">Detect</button>
+      </div>
     </div>
 
     <div class="field">
@@ -404,6 +416,7 @@
     document.getElementById('cam-label').value = '';
     document.getElementById('cam-linex').value = '0.5';
     document.getElementById('cam-loop').value = 'false';
+    document.getElementById('cam-devices').innerHTML = '<option value="">(click Detect to scan)</option>';
     updateUrlField();
   }
 
@@ -416,35 +429,54 @@
     const label = document.getElementById('url-label');
     const input = document.getElementById('cam-url');
     const loopF = document.getElementById('loop-field');
-    if (src === 'usb') {
-      label.textContent = 'Camera Index';
-      input.placeholder = '0';
-      input.value = '0';
-      loopF.style.display = 'none';
-    } else if (src === 'rtsp') {
-      label.textContent = 'RTSP URL';
-      input.placeholder = 'rtsp://username:password@192.168.1.50:554/stream';
-      input.value = '';
+    const facingF = document.getElementById('facing-field');
+    if (src === 'browser') {
+      document.getElementById('url-field').style.display = 'none';
+      facingF.style.display = '';
       loopF.style.display = 'none';
     } else {
-      label.textContent = 'File Path';
-      input.placeholder = 'videos/gate_a.mp4';
-      input.value = '';
-      loopF.style.display = '';
+      document.getElementById('url-field').style.display = '';
+      facingF.style.display = 'none';
+      if (src === 'usb') {
+        label.textContent = 'Camera Index';
+        input.placeholder = '0';
+        input.value = '0';
+        loopF.style.display = 'none';
+      } else if (src === 'rtsp') {
+        label.textContent = 'RTSP URL';
+        input.placeholder = 'rtsp://username:password@192.168.1.50:554/stream';
+        input.value = '';
+        loopF.style.display = 'none';
+      } else {
+        label.textContent = 'File Path';
+        input.placeholder = 'videos/gate_a.mp4';
+        input.value = '';
+        loopF.style.display = '';
+      }
     }
   }
   document.getElementById('cam-source').addEventListener('change', updateUrlField);
 
   function saveCamera() {
     const source = document.getElementById('cam-source').value;
-    const url = document.getElementById('cam-url').value.trim();
     const label = document.getElementById('cam-label').value.trim() || 'Camera';
     const line_x = parseFloat(document.getElementById('cam-linex').value) || 0.5;
     const loop = document.getElementById('cam-loop').value === 'true';
-    if (!url) return alert('URL / Index is required');
+
+    let url, facingMode;
+    if (source === 'browser') {
+      const select = document.getElementById('cam-devices');
+      const deviceId = select.value;
+      if (!deviceId) return alert('Click Detect and select a camera first');
+      url = deviceId;
+      facingMode = '';
+    } else {
+      url = document.getElementById('cam-url').value.trim();
+      if (!url) return alert('URL / Index is required');
+    }
 
     const cams = loadConfig();
-    cams.push({ url, label, line_x, loop, source });
+    cams.push({ url, label, line_x, loop, source, facingMode });
     saveConfig(cams);
     hideAddModal();
     syncAndRender();
@@ -508,7 +540,7 @@
     for (let i = 0; i < cams.length; i++) {
       const cam = cams[i];
       const streamUrl = `/stream/${i}`;
-      const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File' }[cam.source] || 'File';
+      const sourceLabel = { usb: 'USB', rtsp: 'RTSP', file: 'File', browser: 'Browser' }[cam.source] || 'File';
       html += `<div class="cam-card">
         <div class="cam-feed-wrap">
           <img class="cam-feed" src="${streamUrl}" alt="${cam.label}">
@@ -650,6 +682,112 @@
         setTimeout(() => btn.classList.remove('flash'), 600);
       });
   }
+
+  // ── Browser Camera Management ──
+
+  async function detectCameras() {
+    try {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      tempStream.getTracks().forEach(t => t.stop());
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      const select = document.getElementById('cam-devices');
+      select.innerHTML = '';
+      if (videoDevices.length === 0) {
+        select.innerHTML = '<option value="">No cameras found</option>';
+        return;
+      }
+      videoDevices.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${i + 1}`;
+        select.appendChild(opt);
+      });
+    } catch (e) {
+      alert('Camera access denied. Please allow camera permission in your browser.');
+    }
+  }
+
+  const browserStreams = {};   // { camId: { stream, video, interval } }
+
+  async function startBrowserCam(id) {
+    const cams = loadConfig();
+    const cam = cams[id];
+    if (!cam || cam.source !== 'browser') return;
+    if (browserStreams[id]) return; // already running
+
+    try {
+      let videoConstraint;
+      if (cam.facingMode) {
+        videoConstraint = { facingMode: cam.facingMode };
+      } else {
+        videoConstraint = { deviceId: { exact: cam.url } };
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.playsinline = true;
+      video.muted = true;
+      await video.play();
+
+      const interval = setInterval(() => {
+        if (video.readyState < 2) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const base64 = canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+        fetch(`/camera/${id}/frame`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ frame: base64 })
+        }).catch(() => {});
+        canvas.remove();
+      }, 200); // 5 FPS
+
+      browserStreams[id] = { stream, video, interval };
+    } catch (e) {
+      console.error(`[Cam ${id}] Browser camera error:`, e);
+    }
+  }
+
+  function stopBrowserCam(id) {
+    const b = browserStreams[id];
+    if (!b) return;
+    clearInterval(b.interval);
+    b.stream.getTracks().forEach(t => t.stop());
+    b.video.remove();
+    delete browserStreams[id];
+  }
+
+  // Override toggleCam to handle browser cameras
+  const _origToggleCam = toggleCam;
+  toggleCam = function (id, btn) {
+    const cams = loadConfig();
+    const cam = cams[id];
+    const stopping = btn.textContent.trim() === 'Stop';
+
+    if (cam && cam.source === 'browser') {
+      if (stopping) {
+        stopBrowserCam(id);
+        fetch(`/stop/${id}`, { method: 'POST' })
+          .then(r => r.json())
+          .then(d => applyRunningState(btn, d.running));
+      } else {
+        startBrowserCam(id);
+        fetch(`/start/${id}`, { method: 'POST' })
+          .then(r => r.json())
+          .then(d => applyRunningState(btn, d.running));
+      }
+      return;
+    }
+    _origToggleCam(id, btn);
+  };
+
+  // Clean up browser streams on page unload
+  window.addEventListener('beforeunload', function () {
+    for (const id of Object.keys(browserStreams)) stopBrowserCam(id);
+  });
 
   // ── Init ──
   document.addEventListener('DOMContentLoaded', function () {
