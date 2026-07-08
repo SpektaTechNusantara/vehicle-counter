@@ -99,6 +99,11 @@
     background: #0d1117;
     overflow: hidden;
   }
+  .cam-viewport {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    transform-origin: 0 0;
+  }
   .cam-feed {
     width: 100%;
     height: 100%;
@@ -119,6 +124,73 @@
     height: 100%;
     pointer-events: none;
     object-fit: contain;
+  }
+  .cam-sel {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .cam-sel.active { background: rgba(255,255,255,0.06); }
+  .cam-sel .sel-rect {
+    position: absolute;
+    border: 2px dashed #58a6ff;
+    background: rgba(88,166,255,0.12);
+    pointer-events: none;
+  }
+
+  .fs-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .fs-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+  }
+  .fs-content {
+    position: relative;
+    width: 95vw;
+    height: 95vh;
+    display: flex;
+    flex-direction: column;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .fs-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+  }
+  .fs-label {
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  .fs-body {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  .fs-body .cam-overlay {
+    width: 100%;
+    height: 100%;
+  }
+  .fs-body .cam-video,
+  .fs-body .cam-feed {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
   }
   .cam-feed-wrap::before {
     content: "Connecting\u2026";
@@ -392,6 +464,35 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="line-modal">
+  <div class="modal">
+    <h2>Line Settings</h2>
+    <label>
+      <span class="label-text">Position</span>
+      <input type="range" id="line-pos" min="0" max="1" step="0.01" value="0.5">
+      <span id="line-pos-val">50%</span>
+    </label>
+    <label>
+      <span class="label-text">Orientation</span>
+      <select id="line-orient">
+        <option value="vertical">Vertical</option>
+        <option value="horizontal">Horizontal</option>
+      </select>
+    </label>
+    <label>
+      <span class="label-text">Direction</span>
+      <select id="line-dir">
+        <option value="forward">Left → Right</option>
+        <option value="backward">Right → Left</option>
+      </select>
+    </label>
+    <div class="modal-actions">
+      <button class="cam-btn" onclick="closeLineModal()">Cancel</button>
+      <button class="cam-btn btn-save" onclick="saveLineSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ── Live clock ──
   (function tick() {
@@ -426,20 +527,53 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cams));
   }
 
-  // ── Modal ──
-  function showAddModal() {
+  // ── Modal (Add / Edit) ──
+  let _editingIndex = -1;
+
+  function showAddModal(index) {
+    _editingIndex = index !== undefined ? index : -1;
+    const modalTitle = document.querySelector('#add-modal .modal h2');
+    const saveBtn = document.querySelector('#add-modal .btn-save');
+    const isEdit = _editingIndex >= 0;
+
+    if (isEdit) {
+      const cams = loadConfig();
+      const cam = cams[_editingIndex];
+      if (!cam) return;
+      modalTitle.textContent = 'Edit Camera';
+      saveBtn.textContent = 'Update';
+      document.getElementById('cam-source').value = cam.source || 'file';
+      document.getElementById('cam-url').value = cam.url || '';
+      document.getElementById('cam-label').value = cam.label || '';
+      document.getElementById('cam-linex').value = cam.line_x ?? 0.5;
+      document.getElementById('cam-loop').value = cam.loop ? 'true' : 'false';
+      updateUrlField();
+      // If browser camera, detect devices and select the saved one
+      if (cam.source === 'browser') {
+        detectCameras().then(() => {
+          const sel = document.getElementById('cam-devices');
+          for (const opt of sel.options) {
+            if (opt.value === cam.url) { opt.selected = true; break; }
+          }
+        });
+      }
+    } else {
+      modalTitle.textContent = 'Add Camera';
+      saveBtn.textContent = 'Save';
+      document.getElementById('cam-source').value = 'usb';
+      document.getElementById('cam-url').value = '0';
+      document.getElementById('cam-label').value = '';
+      document.getElementById('cam-linex').value = '0.5';
+      document.getElementById('cam-loop').value = 'false';
+      document.getElementById('cam-devices').innerHTML = '<option value="">(click Detect to scan)</option>';
+      updateUrlField();
+    }
     document.getElementById('add-modal').classList.add('open');
-    document.getElementById('cam-source').value = 'usb';
-    document.getElementById('cam-url').value = '0';
-    document.getElementById('cam-label').value = '';
-    document.getElementById('cam-linex').value = '0.5';
-    document.getElementById('cam-loop').value = 'false';
-    document.getElementById('cam-devices').innerHTML = '<option value="">(click Detect to scan)</option>';
-    updateUrlField();
   }
 
   function hideAddModal() {
     document.getElementById('add-modal').classList.remove('open');
+    _editingIndex = -1;
   }
 
   function updateUrlField() {
@@ -494,10 +628,24 @@
     }
 
     const cams = loadConfig();
-    cams.push({ url, label, line_x, loop, source, facingMode });
+    const camObj = { url, label, line_x, loop, source, facingMode };
+
+    if (_editingIndex >= 0 && _editingIndex < cams.length) {
+      // Preserve existing line_x on source change
+      if (cams[_editingIndex].source !== source) {
+        camObj.facingMode = '';
+      }
+      cams[_editingIndex] = camObj;
+    } else {
+      cams.push(camObj);
+    }
     saveConfig(cams);
     hideAddModal();
     syncAndRender();
+  }
+
+  function editCamera(index) {
+    showAddModal(index);
   }
 
   // ── Delete camera ──
@@ -566,8 +714,11 @@
       if (cam.source === 'browser') {
         html += `<div class="cam-card">
         <div class="cam-feed-wrap" id="wrap-${i}">
-          <video class="cam-video" id="video-${i}" autoplay playsinline muted></video>
-          <canvas class="cam-overlay" id="overlay-${i}"></canvas>
+          <div class="cam-viewport" id="viewport-${i}">
+            <video class="cam-video" id="video-${i}" autoplay playsinline muted></video>
+            <canvas class="cam-overlay" id="overlay-${i}"></canvas>
+            <div class="cam-sel" id="sel-${i}"></div>
+          </div>
         </div>
         <div class="cam-info">
           <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(Browser)</span></span>
@@ -576,14 +727,22 @@
             <button class="cam-btn btn-start" id="toggle-${i}"
                     onclick="toggleCam(${i}, this)">Start</button>
             <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+            <button class="cam-btn" onclick="editCamera(${i})">Edit</button>
             <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+            <button class="cam-btn" onclick="zoomReset(${i})" title="Reset Zoom">⟲</button>
+            <button class="cam-btn" onclick="fullscreenCam(${i})" title="Fullscreen">⛶</button>
+            <button class="cam-btn" onclick="showLineModal(${i})" title="Line Settings">━</button>
           </div>
         </div>
       </div>`;
       } else {
         html += `<div class="cam-card">
         <div class="cam-feed-wrap" id="wrap-${i}">
-          <canvas class="cam-feed" id="feed-${i}"></canvas>
+          <div class="cam-viewport" id="viewport-${i}">
+            <canvas class="cam-feed" id="feed-${i}"></canvas>
+            <canvas class="cam-overlay" id="overlay-${i}"></canvas>
+            <div class="cam-sel" id="sel-${i}"></div>
+          </div>
         </div>
         <div class="cam-info">
           <span class="cam-label">${escHtml(cam.label)} <span style="font-size:0.7rem;color:#8b949e;font-weight:400">(${sourceLabel})</span></span>
@@ -592,7 +751,11 @@
             <button class="cam-btn btn-start" id="toggle-${i}"
                     onclick="toggleCam(${i}, this)">Start</button>
             <button class="cam-btn" onclick="resetCam(${i}, this)">Reset</button>
+            <button class="cam-btn" onclick="editCamera(${i})">Edit</button>
             <button class="cam-btn btn-delete" onclick="deleteCamera(${i})">Delete</button>
+            <button class="cam-btn" onclick="zoomReset(${i})" title="Reset Zoom">⟲</button>
+            <button class="cam-btn" onclick="fullscreenCam(${i})" title="Fullscreen">⛶</button>
+            <button class="cam-btn" onclick="showLineModal(${i})" title="Line Settings">━</button>
           </div>
         </div>
       </div>`;
@@ -644,10 +807,22 @@
           if (canvas.width !== img.width || canvas.height !== img.height) {
             canvas.width = img.width;
             canvas.height = img.height;
+            // Sync overlay canvas dimensions
+            const ov = document.getElementById(`overlay-${id}`);
+            if (ov) { ov.width = img.width; ov.height = img.height; }
           }
           ctx.drawImage(img, 0, 0);
           URL.revokeObjectURL(img.src);
           feedLoaded(id);
+          // Draw count line on overlay from config
+          const ov = document.getElementById(`overlay-${id}`);
+          if (ov && ov.width && ov.height) {
+            const cams = loadConfig();
+            const cam = cams[id];
+            const pv = typeof _linePreview !== 'undefined' && _linePreview[id];
+            if (pv) drawLineOnOverlay(id, pv.pos, pv.orient || 'vertical');
+            else if (cam) drawLineOnOverlay(id, cam.line_pos ?? cam.line_x ?? 0.5, cam.line_orientation);
+          }
           pollTimer = setTimeout(poll, 8); // ~120 FPS display
         };
         img.onerror = () => {
@@ -672,6 +847,8 @@
       canvasFeedControllers[id]();
       delete canvasFeedControllers[id];
     }
+    delete _dragLineXFrac[id];
+    if (typeof _linePreview !== 'undefined') delete _linePreview[id];
     const wrap = document.getElementById(`wrap-${id}`);
     if (wrap) wrap.classList.remove('has-feed');
   }
@@ -702,11 +879,27 @@
         const ctx = overlay.getContext('2d');
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-        const lx = data.line_x * overlay.width;
+        const pv = typeof _linePreview !== 'undefined' && _linePreview[id];
+        const pos = pv ? pv.pos : (data.line_pos ?? data.line_x ?? 0.5);
+        const orient = pv ? pv.orient : (data.line_orientation || 'vertical');
+        const lp = pos * (orient === 'horizontal' ? overlay.height : overlay.width);
         ctx.beginPath();
-        ctx.moveTo(lx, 0);
-        ctx.lineTo(lx, overlay.height);
+        if (orient === 'horizontal') {
+          ctx.moveTo(0, lp);
+          ctx.lineTo(overlay.width, lp);
+        } else {
+          ctx.moveTo(lp, 0);
+          ctx.lineTo(lp, overlay.height);
+        }
         ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(orient === 'horizontal' ? overlay.width / 2 : lp,
+                orient === 'horizontal' ? lp : overlay.height / 2, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#00ffff';
+        ctx.fill();
+        ctx.strokeStyle = '#0d1117';
         ctx.lineWidth = 2;
         ctx.stroke();
 
@@ -743,12 +936,359 @@
       annotationOverlays[id]();
       delete annotationOverlays[id];
     }
+    delete _dragLineXFrac[id];
+    if (typeof _linePreview !== 'undefined') delete _linePreview[id];
     const overlay = document.getElementById(`overlay-${id}`);
     if (overlay) {
       const ctx = overlay.getContext('2d');
       ctx.clearRect(0, 0, overlay.width, overlay.height);
     }
   }
+
+  const _dragLineXFrac = {};
+  const _prevLinePos = {};
+
+  function drawLineOnOverlay(id, frac, orient) {
+    orient = orient || 'vertical';
+    const overlay = document.getElementById(`overlay-${id}`);
+    if (!overlay) return;
+    const ctx = overlay.getContext('2d');
+    const w = overlay.width, h = overlay.height;
+    if (!w || !h) return;
+
+    // Erase old line
+    const old = _prevLinePos[id];
+    if (old !== undefined) {
+      if (old.orient === 'horizontal') {
+        ctx.clearRect(0, old.pos - 8, w, 16);
+      } else {
+        ctx.clearRect(old.pos - 8, 0, 16, h);
+      }
+    }
+
+    const lp = frac * (orient === 'horizontal' ? h : w);
+    _prevLinePos[id] = { pos: lp, orient };
+
+    ctx.beginPath();
+    if (orient === 'horizontal') {
+      ctx.moveTo(0, lp);
+      ctx.lineTo(w, lp);
+    } else {
+      ctx.moveTo(lp, 0);
+      ctx.lineTo(lp, h);
+    }
+    ctx.strokeStyle = '#00ffff';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(orient === 'horizontal' ? w / 2 : lp,
+            orient === 'horizontal' ? lp : h / 2, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#00ffff';
+    ctx.fill();
+    ctx.strokeStyle = '#0d1117';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  // ── Zoom / Pan ──
+
+  const _zoomState = {};
+
+  function initZoom(id) {
+    if (!_zoomState[id]) _zoomState[id] = { zoom: 1, panX: 0, panY: 0 };
+  }
+
+  function applyZoom(id) {
+    const vp = document.getElementById(`viewport-${id}`);
+    if (!vp) return;
+    const s = _zoomState[id];
+    if (!s) return;
+    vp.style.transform = `scale(${s.zoom}) translate(${s.panX}px, ${s.panY}px)`;
+  }
+
+  function zoomIn(id)  { initZoom(id); const s=_zoomState[id]; const wrap=document.getElementById(`wrap-${id}`); if(!wrap)return; const r=wrap.getBoundingClientRect(); const cx=r.width/2, cy=r.height/2; const z=Math.min(5,s.zoom*1.3); s.panX=s.panX+cx*(1/z-1/s.zoom); s.panY=s.panY+cy*(1/z-1/s.zoom); s.zoom=z; applyZoom(id); }
+  function zoomOut(id) { initZoom(id); const s=_zoomState[id]; const wrap=document.getElementById(`wrap-${id}`); if(!wrap)return; const r=wrap.getBoundingClientRect(); const cx=r.width/2, cy=r.height/2; const z=Math.max(1,s.zoom/1.3); s.panX=s.panX+cx*(1/z-1/s.zoom); s.panY=s.panY+cy*(1/z-1/s.zoom); s.zoom=z; if(s.zoom<=1){s.panX=0;s.panY=0;} applyZoom(id); }
+  function zoomReset(id) { _zoomState[id] = { zoom: 1, panX: 0, panY: 0 }; applyZoom(id); }
+
+  // Wheel zoom — works in card and fullscreen (uses .cam-viewport)
+  document.addEventListener('wheel', function (e) {
+    const vp = e.target.closest('.cam-viewport');
+    if (!vp) return;
+    const idStr = vp.id.replace('viewport-', '');
+    const id = parseInt(idStr);
+    if (isNaN(id)) return;
+    e.preventDefault();
+    initZoom(id);
+    const s = _zoomState[id];
+    const rect = vp.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const newZoom = Math.max(1, Math.min(5, s.zoom * factor));
+    if (newZoom === s.zoom) return;
+    s.panX = s.panX + mx * (1 / newZoom - 1 / s.zoom);
+    s.panY = s.panY + my * (1 / newZoom - 1 / s.zoom);
+    s.zoom = newZoom;
+    if (s.zoom <= 1) { s.panX = 0; s.panY = 0; }
+    applyZoom(id);
+  }, { passive: false });
+
+  // Left-click or middle-click drag pan
+  const _panState = {};
+
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 && e.button !== 1) return;
+    const vp = e.target.closest('.cam-viewport');
+    if (!vp) return;
+    const idStr = vp.id.replace('viewport-', '');
+    const id = parseInt(idStr);
+    if (isNaN(id)) return;
+    e.preventDefault();
+    initZoom(id);
+    _panState[id] = { startX: e.clientX, startY: e.clientY, panX: _zoomState[id].panX, panY: _zoomState[id].panY };
+    const wrap = document.getElementById(`wrap-${id}`);
+    if (wrap) wrap.style.cursor = 'grabbing';
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    for (const idStr of Object.keys(_panState)) {
+      const id = parseInt(idStr);
+      const s = _panState[id];
+      if (!s) continue;
+      const vp = document.getElementById(`viewport-${id}`);
+      if (!vp || !vp.isConnected) { delete _panState[id]; continue; }
+      const dx = (e.clientX - s.startX) / _zoomState[id].zoom;
+      const dy = (e.clientY - s.startY) / _zoomState[id].zoom;
+      _zoomState[id].panX = s.panX + dx;
+      _zoomState[id].panY = s.panY + dy;
+      applyZoom(id);
+    }
+  });
+
+  document.addEventListener('mouseup', function (e) {
+    for (const idStr of Object.keys(_panState)) {
+      const wrap = document.getElementById(`wrap-${idStr}`);
+      if (wrap) wrap.style.cursor = '';
+      delete _panState[idStr];
+    }
+  });
+
+  // ── Shift+drag rubber-band selection zoom ──
+
+  const _selState = {};
+
+  document.addEventListener('mousedown', function (e) {
+    if (!e.shiftKey || e.button !== 0) return;
+    const vp = e.target.closest('.cam-viewport');
+    if (!vp) return;
+    const idStr = vp.id.replace('viewport-', '');
+    const id = parseInt(idStr);
+    if (isNaN(id)) return;
+    const rect = vp.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const selDiv = document.getElementById(`sel-${id}`);
+    if (!selDiv) return;
+    _selState[id] = { x1: x, y1: y, x2: x, y2: y, id };
+    selDiv.classList.add('active');
+    selDiv.innerHTML = `<div class="sel-rect" style="left:${x}px;top:${y}px;width:0;height:0"></div>`;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    for (const idStr of Object.keys(_selState)) {
+      const s = _selState[idStr];
+      if (!s) continue;
+      const vp = document.getElementById(`viewport-${s.id}`);
+      if (!vp || !vp.isConnected) { delete _selState[idStr]; continue; }
+      const rect = vp.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+      s.x2 = x; s.y2 = y;
+      const l = Math.min(s.x1, s.x2), t = Math.min(s.y1, s.y2);
+      const w2 = Math.abs(s.x2 - s.x1), h2 = Math.abs(s.y2 - s.y1);
+      const selDiv = document.getElementById(`sel-${s.id}`);
+      if (selDiv) {
+        selDiv.innerHTML = `<div class="sel-rect" style="left:${l}px;top:${t}px;width:${w2}px;height:${h2}px"></div>`;
+      }
+    }
+  });
+
+  document.addEventListener('mouseup', function (e) {
+    for (const idStr of Object.keys(_selState)) {
+      const s = _selState[idStr];
+      if (!s) continue;
+      const selDiv = document.getElementById(`sel-${s.id}`);
+      if (selDiv) { selDiv.classList.remove('active'); selDiv.innerHTML = ''; }
+      const w = Math.abs(s.x2 - s.x1);
+      const h = Math.abs(s.y2 - s.y1);
+      if (w > 10 && h > 10) {
+        const vp = document.getElementById(`viewport-${s.id}`);
+        if (!vp) { delete _selState[idStr]; continue; }
+        const vpRect = vp.getBoundingClientRect();
+        const fw = w / vpRect.width;
+        const fh = h / vpRect.height;
+        initZoom(s.id);
+        const zs = _zoomState[s.id];
+        const newZoom = Math.max(1, Math.min(5, zs.zoom / Math.max(fw, fh)));
+        const leftPx = Math.min(s.x1, s.x2);
+        const topPx  = Math.min(s.y1, s.y2);
+        zs.panX = zs.panX - leftPx / zs.zoom;
+        zs.panY = zs.panY - topPx / zs.zoom;
+        zs.zoom = newZoom;
+        if (zs.zoom <= 1) { zs.panX = 0; zs.panY = 0; }
+        applyZoom(s.id);
+      }
+      delete _selState[idStr];
+    }
+  });
+
+  // ── Fullscreen popup ──
+
+  let _fsId = null;
+
+  function fullscreenCam(id) {
+    // Toggle off if already fullscreen for same camera
+    if (_fsId === id) { closeFullscreen(); return; }
+    // Close any existing fullscreen first
+    if (_fsId !== null) closeFullscreen(true);
+
+    const modal = document.createElement('div');
+    modal.id = 'fs-modal';
+    modal.className = 'fs-modal';
+    modal.innerHTML = `<div class="fs-backdrop"></div>
+      <div class="fs-content">
+        <div class="fs-header">
+          <span class="fs-label" id="fs-label">${escHtml(loadConfig()[id]?.label || `Camera ${id}`)}</span>
+          <button class="cam-btn" onclick="closeFullscreen()" title="Close">✕</button>
+        </div>
+        <div class="fs-body" id="fs-body"></div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    // Move the viewport into the modal body
+    const srcVp = document.getElementById(`viewport-${id}`);
+    const dstBody = document.getElementById('fs-body');
+    if (srcVp && dstBody) {
+      srcVp._fsParent = srcVp.parentElement; // save restore point
+      srcVp._fsNextSibling = srcVp.nextSibling;
+      dstBody.appendChild(srcVp);
+      // Re-apply zoom state
+      const zs = _zoomState[id];
+      if (zs) srcVp.style.transform = `scale(${zs.zoom}) translate(${zs.panX}px, ${zs.panY}px)`;
+    }
+    _fsId = id;
+  }
+
+  function closeFullscreen(silent) {
+    const modal = document.getElementById('fs-modal');
+    if (!modal) return;
+    // Restore viewport to original place
+    if (_fsId !== null) {
+      const vp = document.getElementById(`viewport-${_fsId}`);
+      if (vp && vp._fsParent) {
+        if (vp._fsNextSibling) {
+          vp._fsParent.insertBefore(vp, vp._fsNextSibling);
+        } else {
+          vp._fsParent.appendChild(vp);
+        }
+        delete vp._fsParent;
+        delete vp._fsNextSibling;
+      }
+    }
+    modal.remove();
+    _fsId = null;
+  }
+
+  // Close fullscreen on Escape
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && document.getElementById('fs-modal')) closeFullscreen();
+  });
+
+  // ── Line settings modal ──
+
+  let _lineModalId = null;
+  const _linePreview = {};
+
+  function linePreview() {
+    const id = _lineModalId;
+    if (id === null) return;
+    _linePreview[id] = {
+      pos: parseFloat(document.getElementById('line-pos').value),
+      orient: document.getElementById('line-orient').value,
+      dir: document.getElementById('line-dir').value,
+    };
+    drawLineOnOverlay(id, _linePreview[id].pos, _linePreview[id].orient);
+  }
+
+  function showLineModal(id) {
+    _lineModalId = id;
+    const cams = loadConfig();
+    const cam = cams[id];
+    if (!cam) return;
+    document.getElementById('line-pos').value = cam.line_pos ?? cam.line_x ?? 0.5;
+    document.getElementById('line-pos-val').textContent =
+      Math.round((cam.line_pos ?? cam.line_x ?? 0.5) * 100) + '%';
+    const orient = cam.line_orientation || 'vertical';
+    document.getElementById('line-orient').value = orient;
+    updateLineDirOptions(orient);
+    document.getElementById('line-dir').value = cam.line_direction || 'forward';
+    linePreview();
+    document.getElementById('line-modal').classList.add('open');
+  }
+
+  function closeLineModal() {
+    const id = _lineModalId;
+    document.getElementById('line-modal').classList.remove('open');
+    if (id !== null) delete _linePreview[id];
+    _lineModalId = null;
+    // Redraw with saved position
+    const cams = loadConfig();
+    const cam = cams[id];
+    if (cam) drawLineOnOverlay(id, cam.line_pos ?? cam.line_x ?? 0.5, cam.line_orientation || 'vertical');
+  }
+
+  function updateLineDirOptions(orient) {
+    const sel = document.getElementById('line-dir');
+    if (orient === 'horizontal') {
+      sel.options[0] = new Option('Top → Bottom', 'forward');
+      sel.options[1] = new Option('Bottom → Top', 'backward');
+    } else {
+      sel.options[0] = new Option('Left → Right', 'forward');
+      sel.options[1] = new Option('Right → Left', 'backward');
+    }
+  }
+
+  function saveLineSettings() {
+    const id = _lineModalId;
+    if (id === null) return;
+    const pos = parseFloat(document.getElementById('line-pos').value);
+    const orient = document.getElementById('line-orient').value;
+    const dir = document.getElementById('line-dir').value;
+    const cams = loadConfig();
+    if (!cams[id]) return;
+    cams[id].line_pos = pos;
+    cams[id].line_orientation = orient;
+    cams[id].line_direction = dir;
+    cams[id].line_x = pos; // backward compat
+    saveConfig(cams);
+    delete _linePreview[id];
+    fetch(`/camera/${id}/line`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ line_x: pos, line_pos: pos, line_orientation: orient, line_direction: dir })
+    }).catch(() => {});
+    closeLineModal();
+  }
+
+  // Live preview on changes
+  document.getElementById('line-pos').addEventListener('input', linePreview);
+  document.getElementById('line-orient').addEventListener('change', function () {
+    updateLineDirOptions(this.value);
+    const sel = document.getElementById('line-dir');
+    if (sel.options.length > 0) sel.selectedIndex = 0;
+    linePreview();
+  });
 
   // ── SSE live counts ──
   let sseInitialized = false;

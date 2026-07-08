@@ -13,6 +13,7 @@ import threading
 import queue
 import json
 import base64
+import logging
 import yaml
 import argparse
 import cv2
@@ -21,25 +22,44 @@ from flask import Flask, Response, render_template, stream_with_context, request
 from waitress import serve
 from ultralytics import YOLO
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("server.log", mode="a"),
+    ],
+)
+log = logging.getLogger("vcounter")
+
 MJPEG_FPS = 60
 MJPEG_INTERVAL = 1.0 / MJPEG_FPS
 
 
 # ── Layer 1: pure counting logic ───────────────────────────────────────────
 
-def check_crossing(tid, cx, line_x, state):
-    if tid not in state["first_x"]:
-        state["first_x"][tid] = cx
+def check_crossing(tid, cx, cy, line_pos, state, orientation="vertical", direction="forward"):
+    first_key = f"first_{tid}"
+    prev_key = f"prev_{tid}"
+    pos = cy if orientation == "horizontal" else cx
+    if first_key not in state:
+        state[first_key] = pos
 
     crossed = False
-    if tid in state["prev_x"] and tid not in state["crossed_ids"]:
-        px = state["prev_x"][tid]
-        if abs(cx - state["first_x"][tid]) >= state["min_travel"]:
-            if px < line_x <= cx or px > line_x >= cx:
-                state["crossed_ids"].add(tid)
-                crossed = True
+    if prev_key in state and f"crossed_{tid}" not in state:
+        prev = state[prev_key]
+        if abs(pos - state[first_key]) >= state["min_travel"]:
+            if direction == "forward":
+                if prev < line_pos <= pos:
+                    state[f"crossed_{tid}"] = True
+                    crossed = True
+            else:  # backward
+                if prev > line_pos >= pos:
+                    state[f"crossed_{tid}"] = True
+                    crossed = True
 
-    state["prev_x"][tid] = cx
+    state[prev_key] = pos
     return crossed
 
 
@@ -84,7 +104,7 @@ class FrameGrabber(threading.Thread):
         if self.source == "browser":
             # Browser source: no capture loop; frames arrive via feed_frame()
             self.connected = True
-            print(f"[Cam {self.cam_id}] Browser source — waiting for frames")
+            log.info(f"[Cam {self.cam_id}] Browser source — waiting for frames")
             while not self._stop.is_set():
                 time.sleep(0.1)
             return
@@ -95,7 +115,7 @@ class FrameGrabber(threading.Thread):
             else:
                 cap = cv2.VideoCapture(self.url)
             if not cap.isOpened():
-                print(f"[Cam {self.cam_id}] Cannot open {self.url!r} — retrying in 3 s")
+                log.warning(f"[Cam {self.cam_id}] Cannot open {self.url!r} — retrying in 3 s")
                 time.sleep(3)
                 continue
 
@@ -103,7 +123,7 @@ class FrameGrabber(threading.Thread):
             src_fps = cap.get(cv2.CAP_PROP_FPS) or 30
             is_file = self.source == "file"
             frame_interval = 1.0 / src_fps if is_file else 0
-            print(f"[Cam {self.cam_id}] Connected — {src_fps:.0f} fps source ({self.source})")
+            log.info(f"[Cam {self.cam_id}] Connected — {src_fps:.0f} fps source ({self.source})")
 
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -112,7 +132,7 @@ class FrameGrabber(threading.Thread):
                     if self.loop:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         continue
-                    print(f"[Cam {self.cam_id}] Stream ended — reconnecting")
+                    log.warning(f"[Cam {self.cam_id}] Stream ended — reconnecting")
                     break
                 try:
                     self._q.get_nowait()
@@ -200,7 +220,9 @@ class CameraWorker(threading.Thread):
         self.cam_id = cam_id
         self.grabber = grabber
         self.buf = buf
-        self.line_x_frac = cam_cfg.get("line_x", 0.5)
+        self.line_x_frac = cam_cfg.get("line_pos", cam_cfg.get("line_x", 0.5))
+        self.line_orientation = cam_cfg.get("line_orientation", "vertical")
+        self.line_direction = cam_cfg.get("line_direction", "forward")
         self.model_path = global_cfg["model"]
         self.tracker_path = global_cfg["tracker"]
         self.conf = global_cfg.get("conf", 0.25)
@@ -232,15 +254,21 @@ class CameraWorker(threading.Thread):
     def reset(self):
         with self._lock:
             self._counts = {cls: 0 for cls in self.active_classes}
-            self._state["crossed_ids"].clear()
-            self._state["first_x"].clear()
-            self._state["prev_x"].clear()
-            self._state["track_class"].clear()
+            # Clear crossing state (per-track keys are dynamic)
+            for k in list(self._state.keys()):
+                if k != "min_travel" and k != "track_class":
+                    del self._state[k]
         self.buf.reset_counts(self._counts)
 
     def run(self):
         time.sleep(self.cam_id * 0.5)
-        model = YOLO(self.model_path, task="detect")
+        log.info(f"[Cam {self.cam_id}] Loading model: {self.model_path}")
+        try:
+            model = YOLO(self.model_path, task="detect")
+            log.info(f"[Cam {self.cam_id}] Model loaded OK")
+        except Exception as e:
+            log.error(f"[Cam {self.cam_id}] Model load FAILED: {e}")
+            raise
         ftimes = []
 
         while not self._stop.is_set():
@@ -255,7 +283,7 @@ class CameraWorker(threading.Thread):
 
             t0 = time.time()
             h, w = frame.shape[:2]
-            line_x = int(w * self.line_x_frac)
+            line_px = int((self.line_orientation == "horizontal" and h or w) * self.line_x_frac)
 
             results = model.track(
                 frame,
@@ -267,13 +295,14 @@ class CameraWorker(threading.Thread):
             )
 
             annotated = results[0].plot()
-            cv2.line(annotated, (line_x, 0), (line_x, h), (0, 255, 255), 2)
 
             ann_boxes = []
             if results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 ids   = results[0].boxes.id.cpu().numpy().astype(int)
                 clses = results[0].boxes.cls.cpu().numpy().astype(int)
+                n = len(boxes)
+                log.debug(f"[Cam {self.cam_id}] Detected {n} objects")
                 for box, tid, cls in zip(boxes, ids, clses):
                     x1, y1, x2, y2 = box.tolist()
                     ann_boxes.append({
@@ -281,11 +310,14 @@ class CameraWorker(threading.Thread):
                         "id": int(tid), "class": int(cls),
                     })
                     cx = int((box[0] + box[2]) / 2)
-                    if tid not in self._state["first_x"]:
+                    cy = int((box[1] + box[3]) / 2)
+                    if f"first_{tid}" not in self._state:
                         self._state["track_class"][tid] = int(cls)
-                    if check_crossing(tid, cx, line_x, self._state):
+                    if check_crossing(tid, cx, cy, line_px, self._state, self.line_orientation, self.line_direction):
                         with self._lock:
                             self._counts[self._state["track_class"][tid]] += 1
+            else:
+                log.debug(f"[Cam {self.cam_id}] No detections")
 
             cv2.putText(annotated, self.buf.label,
                         (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
@@ -309,6 +341,9 @@ class CameraWorker(threading.Thread):
             ann_data = {
                 "boxes": ann_boxes,
                 "line_x": self.line_x_frac,
+                "line_pos": self.line_x_frac,
+                "line_orientation": self.line_orientation,
+                "line_direction": self.line_direction,
                 "width": w,
                 "height": h,
             }
@@ -565,10 +600,85 @@ def get_annotations(cam_id):
     return ann
 
 
+@app.route("/camera/<int:cam_id>/line", methods=["POST"])
+def update_line(cam_id):
+    data = request.get_json(force=True)
+    line_x = float(data.get("line_pos", data.get("line_x", 0.5)))
+    orient = data.get("line_orientation", "vertical")
+    direc = data.get("line_direction", "forward")
+    with _cam_lock:
+        if cam_id >= len(workers) or workers[cam_id] is None:
+            return {"error": "not found"}, 404
+        workers[cam_id].line_x_frac = max(0.0, min(1.0, line_x))
+        if orient in ("vertical", "horizontal"):
+            workers[cam_id].line_orientation = orient
+        if direc in ("forward", "backward"):
+            workers[cam_id].line_direction = direc
+    return {"status": "ok", "line_x": workers[cam_id].line_x_frac,
+            "line_orientation": workers[cam_id].line_orientation,
+            "line_direction": workers[cam_id].line_direction}
+
+
 @app.route("/health")
 def health():
     with _cam_lock:
         return {"status": "ok", "cameras": len([b for b in buffers if b is not None])}
+
+
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
+
+
+@app.route("/logs/clear", methods=["POST"])
+def clear_logs():
+    try:
+        open(LOG_FILE, "w").close()
+        log.info("Logs cleared via /logs/clear")
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/logs")
+def view_logs():
+    lines = []
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                level = ""
+                cls = ""
+                if "[ERROR]" in line:   cls = "log-err"
+                elif "[WARNING]" in line: cls = "log-warn"
+                elif "[INFO]" in line:  cls = "log-info"
+                lines.append(f"<tr><td><code class=\"{cls}\">{line}</code></td></tr>")
+    except FileNotFoundError:
+        lines.append('<tr><td><em>server.log not found yet</em></td></tr>')
+    rows = "\n".join(lines[-500:])  # last 500 lines
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Vehicle Counter — Logs</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ background:#0d1117; color:#e6edf3; font-family:monospace; font-size:13px; padding:16px; }}
+  h1 {{ font-size:1.1rem; margin-bottom:12px; color:#8b949e; }}
+  table {{ width:100%; border-collapse:collapse; }}
+  td {{ padding:2px 8px; border-bottom:1px solid #21262d; }}
+  code {{ white-space:pre; }}
+  .log-err  {{ color:#f85149; }}
+  .log-warn {{ color:#d29922; }}
+  .log-info {{ color:#e6edf3; }}
+  a {{ color:#58a6ff; text-decoration:none; font-size:0.85rem; }}
+</style></head>
+<body>
+<h1>Server Log <a href="/logs" style="margin-left:12px">&#x21bb;</a>
+  <a href="/" style="margin-left:8px">&#x2190; Dashboard</a>
+  <button onclick="fetch('/logs/clear',{{method:'POST'}}).then(()=>location.reload())"
+    style="margin-left:12px;background:#f85149;color:#fff;border:none;border-radius:4px;padding:2px 10px;cursor:pointer;font-size:0.8rem">Clear</button></h1>
+<table>{rows}</table>
+<script>setTimeout(function(){{ location.reload(); }}, 3000);</script>
+</body></html>"""
+    return html
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
@@ -642,12 +752,13 @@ def main():
 
     port = args.port or port
 
-    print(f"\n  Dashboard → http://localhost:{port}/")
-    print(f"  Model     : {_global_cfg['model']}")
-    print(f"  Tracker   : {_global_cfg['tracker']}")
+    log.info(f"Dashboard → http://localhost:{port}/")
+    log.info(f"Model     : {_global_cfg['model']}")
+    log.info(f"Tracker   : {_global_cfg['tracker']}")
     cam_count = len([b for b in buffers if b is not None])
-    print(f"  Cameras   : {cam_count} (add/remove from browser UI)")
+    log.info(f"Cameras   : {cam_count} (add/remove from browser UI)")
     print()
+    print(f"  Dashboard → http://localhost:{port}/")
 
     thread_count = max(32, (cam_count + 1) * 4)
     serve(app, host=host, port=port, threads=thread_count)
